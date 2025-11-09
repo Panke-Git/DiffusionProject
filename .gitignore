@@ -206,7 +206,7 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 .idea
+.src/.DS_store
 .DS_store
 .DS_Store
-src/.DS_Store
 src/.DS_Store
