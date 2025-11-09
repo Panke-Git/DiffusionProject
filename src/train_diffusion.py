@@ -1,0 +1,204 @@
+"""
+    @Project: UnderwaterImageEnhanced-Diffusion
+    @Author: ChatGPT (adapted to user's style)
+    @FileName: train_diffusion.py
+    @Time: 2025/11/09
+    @Email: None
+"""
+from __future__ import annotations
+import argparse
+import math
+import os
+from datetime import datetime
+from pathlib import Path
+
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
+
+from src.config.config import Config
+from src.data.paired_dataset import PairedFolder
+from src.diffusion.scheduler import Diffusion
+from src.models.diffusion_unet import UNet
+from src.utils.ema import EMA
+from src.utils.metrics import psnr as psnr_metric, ssim as ssim_metric, to01
+from src.utils.record_utils import make_train_path, save_train_config
+from src.utils.train_utils import seed_everything
+
+def build_dataloaders(cfg):
+    train_ds = PairedFolder(cfg.PROJECT.TRAIN_DIR, 'train', cfg.DATASET.IMG_H, cfg.DATASET.INPUT, cfg.DATASET.TARGET, augment=True)
+    val_ds   = PairedFolder(cfg.PROJECT.VAL_DIR, 'val',   cfg.DATASET.IMG_H, cfg.DATASET.INPUT, cfg.DATASET.TARGET, augment=False)
+    train_dl = DataLoader(train_ds, batch_size=cfg.TRAIN.BATCH_SIZE, shuffle=True, num_workers=8, pin_memory=True, drop_last=True)
+    val_dl   = DataLoader(val_ds,   batch_size=max(1, cfg.TRAIN.BATCH_SIZE//2), shuffle=False, num_workers=8, pin_memory=True, drop_last=False)
+    return train_dl, val_dl
+
+@torch.no_grad()
+def validate(model: UNet, ema: EMA, diffusion: Diffusion, val_dl: DataLoader, device, cfg, record_path: Path, step: int, writer: SummaryWriter | None):
+    # 拷贝 EMA 权重用于评估
+    ema_model = UNet(image_size=cfg.MODEL.IMAGE_SIZE, in_channels=6, out_channels=3,
+                     base_channels=cfg.MODEL.BASE_CHANNELS, channel_mults=tuple(cfg.MODEL.CHANNEL_MULTS),
+                     num_res_blocks=cfg.MODEL.NUM_RES_BLOCKS, attn_resolutions=tuple(cfg.MODEL.ATTN_RES),
+                     time_pos_dim=cfg.MODEL.TIME_POS_DIM, time_dim=cfg.MODEL.TIME_DIM, dropout=cfg.MODEL.DROPOUT).to(device)
+    ema.copy_to(ema_model)
+    ema_model.eval()
+
+    psnr_total, ssim_total, n_batches = 0.0, 0.0, 0
+    sample_dir = record_path / 'samples' / f"step_{step:07d}"
+    sample_dir.mkdir(parents=True, exist_ok=True)
+
+    pbar = tqdm(val_dl, desc="[Val]")
+    for i, batch in enumerate(pbar):
+        y = batch["y"].to(device) * 2 - 1  # [-1,1]
+        x0 = batch["x0"].to(device) * 2 - 1
+
+        # img2img 起点：从 y 加噪
+        x_hat = diffusion.ddim_sample(ema_model, to01(y)*2-1, image_size=cfg.MODEL.IMAGE_SIZE,
+                                      steps=cfg.SCHEDULER.SAMPLE_STEPS, eta=cfg.SCHEDULER.SAMPLE_ETA,
+                                      start_from_y=cfg.EVAL.USE_IMG2IMG_START)
+
+        x_hat01 = to01(x_hat); x001 = to01(x0)
+
+        # 计算指标
+        psnr_val = psnr_metric(x_hat01, x001)
+        ssim_val = ssim_metric(x_hat01, x001)
+        psnr_total += psnr_val; ssim_total += ssim_val; n_batches += 1
+
+        if i < cfg.EVAL.NUM_VIS_BATCH:
+            # 保存 y | x_hat | x0 便于肉眼对比
+            from torchvision.utils import save_image
+            grid = torch.cat([to01(y), x_hat01, x001], dim=0)
+            save_image(grid, sample_dir / f"val_{i:03d}.png", nrow=y.size(0))
+
+    m_psnr = psnr_total / max(1, n_batches)
+    m_ssim = ssim_total / max(1, n_batches)
+    if writer is not None:
+        writer.add_scalar("val/psnr", m_psnr, step)
+        writer.add_scalar("val/ssim", m_ssim, step)
+    print(f"[Val] step={step} PSNR={m_psnr:.3f} SSIM={m_ssim:.4f}")
+
+def train_one_epoch(model: UNet, diffusion: Diffusion, train_dl: DataLoader, opt, scaler, device, cfg, ema: EMA, writer: SummaryWriter | None, global_step: int):
+    model.train()
+    pbar = tqdm(train_dl, desc="[Train]")
+    for it, batch in enumerate(pbar):
+        y = batch["y"].to(device) * 2 - 1  # [-1,1]
+        x0 = batch["x0"].to(device) * 2 - 1
+        B = y.size(0)
+        t = torch.randint(0, diffusion.steps, (B,), device=device, dtype=torch.long)
+        noise = torch.randn_like(x0)
+        x_t = diffusion.q_sample(x0, t, noise)
+
+        with torch.cuda.amp.autocast(enabled=cfg.TRAIN.AMP):
+            eps_pred = model(x_t, y, t)
+            loss = F.mse_loss(eps_pred, noise)
+            if cfg.TRAIN.get("RECON_LAMBDA", 0.0) and cfg.TRAIN.RECON_LAMBDA > 0:
+                a_bar = diffusion.alphas_cumprod[t]
+                while a_bar.dim() < x0.dim():
+                    a_bar = a_bar.unsqueeze(-1)
+                x0_pred = (x_t - torch.sqrt(1 - a_bar) * eps_pred) / torch.sqrt(a_bar)
+                loss_rec = F.l1_loss(to01(x0_pred), to01(x0))
+                loss = loss + cfg.TRAIN.RECON_LAMBDA * loss_rec
+
+        loss = loss / max(1, cfg.TRAIN.ACCUM_STEPS)
+        scaler.scale(loss).backward()
+
+        if (it + 1) % max(1, cfg.TRAIN.ACCUM_STEPS) == 0:
+            if cfg.TRAIN.GRAD_CLIP and cfg.TRAIN.GRAD_CLIP > 0:
+                scaler.unscale_(opt)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.TRAIN.GRAD_CLIP)
+            scaler.step(opt)
+            scaler.update()
+            opt.zero_grad(set_to_none=True)
+            ema.update(model)
+            global_step += 1
+
+            if writer is not None and global_step % cfg.LOG.LOG_INTERVAL == 0:
+                writer.add_scalar("train/loss", loss.item() * max(1, cfg.TRAIN.ACCUM_STEPS), global_step)
+
+    return global_step
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--cfg", type=str, required=True, help="YAML 配置文件路径")
+    ap.add_argument("--eval_only", action="store_true", help="仅做验证/采样")
+    args = ap.parse_args()
+
+    cfg = Config.load(args.cfg)
+
+    # 设备与随机种子
+    device = torch.device(cfg.TRAIN.DEVICE if torch.cuda.is_available() else "cpu")
+    seed_everything(cfg.TRAIN.SEED)
+
+    # 训练记录路径与日志
+    start_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_name = f"UNetDiffusion_C{cfg.MODEL.BASE_CHANNELS}_S{cfg.SCHEDULER.STEPS}"
+    record_path, ckpt_dir = make_train_path(cfg.PROJECT.EXPT_RECORD_DIR, model_name, start_time)
+    cfg_path = save_train_config(record_path,
+                                 model=model_name,
+                                 dataset_train=cfg.PROJECT.TRAIN_DIR,
+                                 dataset_val=cfg.PROJECT.VAL_DIR,
+                                 lr=float(cfg.TRAIN.LR),
+                                 batch_size=cfg.TRAIN.BATCH_SIZE,
+                                 steps=cfg.SCHEDULER.STEPS,
+                                 sample_steps=cfg.SCHEDULER.SAMPLE_STEPS,
+                                 seed=cfg.TRAIN.SEED)
+    writer = None
+    try:
+        writer = SummaryWriter(log_dir=str(record_path / "logs"))
+    except Exception:
+        writer = None
+
+    # 数据
+    train_dl, val_dl = build_dataloaders(cfg)
+
+    # 模型 / 调度器 / 优化器
+    model = UNet(image_size=cfg.MODEL.IMAGE_SIZE, in_channels=6, out_channels=3,
+                 base_channels=cfg.MODEL.BASE_CHANNELS, channel_mults=tuple(cfg.MODEL.CHANNEL_MULTS),
+                 num_res_blocks=cfg.MODEL.NUM_RES_BLOCKS, attn_resolutions=tuple(cfg.MODEL.ATTN_RES),
+                 time_pos_dim=cfg.MODEL.TIME_POS_DIM, time_dim=cfg.MODEL.TIME_DIM, dropout=cfg.MODEL.DROPOUT).to(device)
+    ema = EMA(model, decay=cfg.TRAIN.EMA_DECAY)
+    diffusion = Diffusion(steps=cfg.SCHEDULER.STEPS, schedule="cosine", device=device)
+
+    opt = torch.optim.AdamW(model.parameters(), lr=float(cfg.TRAIN.LR), weight_decay=float(cfg.TRAIN.WEIGHT_DECAY))
+    scaler = torch.cuda.amp.GradScaler(enabled=bool(cfg.TRAIN.AMP))
+    # 学习率计划（与用户风格一致：CosineAnnealingLR 以 epoch 为周期也可，这里按 step 不细化，保持简洁）
+    # 可按需接入 torch.optim.lr_scheduler.CosineAnnealingLR
+
+    # 仅验证
+    if args.eval_only:
+        # 加载最近的 ckpt
+        ckpts = sorted((record_path.parent / model_name).glob("*/ckpts/ckpt_*.pt"))
+        if not ckpts:
+            print("No checkpoints found under:", record_path.parent / model_name)
+            return
+        state = torch.load(ckpts[-1], map_location=device)
+        model.load_state_dict(state["model"])
+        ema.shadow = state["ema"]
+        validate(model, ema, diffusion, val_dl, device, cfg, record_path, step=state.get("step", 0), writer=writer)
+        return
+
+    # 训练循环
+    global_step = 0
+    best_psnr = -1.0
+
+    for epoch in range(cfg.TRAIN.EPOCHS):
+        global_step = train_one_epoch(model, diffusion, train_dl, opt, scaler, device, cfg, ema, writer, global_step)
+
+        # 每个 epoch 结束做一次验证与保存
+        validate(model, ema, diffusion, val_dl, device, cfg, record_path, step=global_step, writer=writer)
+
+        # 保存 checkpoint
+        state = {
+            "step": global_step,
+            "model": model.state_dict(),
+            "ema": ema.shadow,
+            "opt": opt.state_dict(),
+            "scaler": scaler.state_dict(),
+            "cfg": vars(cfg)
+        }
+        ckpt_path = ckpt_dir / f"ckpt_{global_step:07d}.pt"
+        torch.save(state, ckpt_path)
+
+if __name__ == "__main__":
+    main()

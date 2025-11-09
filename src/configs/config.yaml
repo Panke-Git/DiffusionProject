@@ -1,0 +1,50 @@
+PROJECT:
+  NAME: "UnderwaterImageEnhanced-Diffusion"
+  ROOT_PATH: "."
+  TRAIN_DIR: "/path/to/your/dataset_root/train"   # 修改为你的路径
+  VAL_DIR: "/path/to/your/dataset_root/val"       # 修改为你的路径
+  EXPT_RECORD_DIR: "./runs/exp_diffusion"         # 训练记录、权重、样例
+
+DATASET:
+  INPUT: "input"
+  TARGET: "GT"
+  IMG_W: 256
+  IMG_H: 256
+
+TRAIN:
+  DEVICE: "cuda"
+  SEED: 9861
+  BATCH_SIZE: 8
+  EPOCHS: 100
+  LR: 2.0e-4
+  WEIGHT_DECAY: 0.0
+  ACCUM_STEPS: 1
+  GRAD_CLIP: 1.0
+  AMP: true
+  EMA_DECAY: 0.9999
+
+SCHEDULER:
+  TYPE: "cosine"      # cosine
+  STEPS: 1000         # 扩散总步数（训练日程）
+  SAMPLE_STEPS: 30    # 验证/采样的步数
+  SAMPLE_ETA: 0.0     # DDIM eta; 0=确定性
+
+MODEL:
+  IMAGE_SIZE: 256
+  BASE_CHANNELS: 64
+  CHANNEL_MULTS: [1, 2, 4, 8, 8]
+  NUM_RES_BLOCKS: 2
+  ATTN_RES: [32, 16]     # 在这些分辨率启用自注意力
+  TIME_POS_DIM: 128
+  TIME_DIM: 256
+  DROPOUT: 0.0
+
+LOG:
+  LOG_INTERVAL: 100
+  VAL_INTERVAL: 2000
+  SAVE_INTERVAL: 2000
+  MAX_CKPTS: 5
+
+EVAL:
+  USE_IMG2IMG_START: true   # 从 y 加同强度噪声起步（保结构）
+  NUM_VIS_BATCH: 4          # 每次验证保存前若干 batch 的可视化
