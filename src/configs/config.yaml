@@ -1,8 +1,8 @@
 PROJECT:
   NAME: "UnderwaterImageEnhanced-Diffusion"
   ROOT_PATH: "."
-  TRAIN_DIR: "/path/to/your/dataset_root/train"   # 修改为你的路径
-  VAL_DIR: "/path/to/your/dataset_root/val"       # 修改为你的路径
+  TRAIN_DIR: "/public/home/hnust15874739861/pro/UnderwaterImageEnhanced/dataset/UIEB19/Train"   # 修改为你的路径
+  VAL_DIR: "/public/home/hnust15874739861/pro/UnderwaterImageEnhanced/dataset/UIEB19/Val"       # 修改为你的路径
   EXPT_RECORD_DIR: "./runs/exp_diffusion"         # 训练记录、权重、样例
 
 DATASET:
@@ -44,6 +44,11 @@ LOG:
   VAL_INTERVAL: 2000
   SAVE_INTERVAL: 2000
   MAX_CKPTS: 5
+  SAVE_BEST_ONLY: true
+  MONITOR: "psnr"
+  MODE: "max"
+  METRICS_JSON: "metrics.json"
+  METRICS_XLSX: "metrics.xlsx"
 
 EVAL:
   USE_IMG2IMG_START: true   # 从 y 加同强度噪声起步（保结构）

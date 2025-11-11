@@ -77,12 +77,10 @@ def validate(model: UNet, ema: EMA, diffusion: Diffusion, val_dl: DataLoader, de
         writer.add_scalar("val/psnr", m_psnr, step)
         writer.add_scalar("val/ssim", m_ssim, step)
     print(f"[Val] step={step} PSNR={m_psnr:.3f} SSIM={m_ssim:.4f}")
-    return m_psnr, m_ssim
 
 def train_one_epoch(model: UNet, diffusion: Diffusion, train_dl: DataLoader, opt, scaler, device, cfg, ema: EMA, writer: SummaryWriter | None, global_step: int):
     model.train()
     pbar = tqdm(train_dl, desc="[Train]")
-    running_loss, num_iters = 0.0, 0
     for it, batch in enumerate(pbar):
         y = batch["y"].to(device) * 2 - 1  # [-1,1]
         x0 = batch["x0"].to(device) * 2 - 1
@@ -116,13 +114,13 @@ def train_one_epoch(model: UNet, diffusion: Diffusion, train_dl: DataLoader, opt
             global_step += 1
 
             if writer is not None and global_step % cfg.LOG.LOG_INTERVAL == 0:
-                writer.add_scalar('train/loss', running_loss / max(1, num_iters), global_step)
-    avg_loss = running_loss / max(1, num_iters)
-    return global_step, avg_loss
+                writer.add_scalar("train/loss", loss.item() * max(1, cfg.TRAIN.ACCUM_STEPS), global_step)
+
+    return global_step
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--cfg", default='./config/config.py',  type=str, required=True, help="YAML 配置文件路径")
+    ap.add_argument("--cfg", default='config/config.py',  type=str, required=True, help="YAML 配置文件路径")
     ap.add_argument("--eval_only", action="store_true", help="仅做验证/采样")
     args = ap.parse_args()
 
@@ -182,50 +180,25 @@ def main():
 
     # 训练循环
     global_step = 0
-    best_metric = -1e9 if cfg.LOG.MODE.lower() == 'max' else 1e9
-    metrics_log = []
-    import json, pandas as pd
+    best_psnr = -1.0
 
     for epoch in range(cfg.TRAIN.EPOCHS):
-        global_step, avg_loss = train_one_epoch(model, diffusion, train_dl, opt, scaler, device, cfg, ema, writer, global_step)
+        global_step = train_one_epoch(model, diffusion, train_dl, opt, scaler, device, cfg, ema, writer, global_step)
 
-        val_psnr, val_ssim = validate(model, ema, diffusion, val_dl, device, cfg, record_path, step=global_step, writer=writer)
-        lr_now = float(opt.param_groups[0]['lr'])
-        rec = {
-            'epoch': int(epoch+1),
-            'global_step': int(global_step),
-            'train_loss': float(avg_loss),
-            'val_psnr': float(val_psnr),
-            'val_ssim': float(val_ssim),
-            'lr': lr_now,
+        # 每个 epoch 结束做一次验证与保存
+        validate(model, ema, diffusion, val_dl, device, cfg, record_path, step=global_step, writer=writer)
+
+        # 保存 checkpoint
+        state = {
+            "step": global_step,
+            "model": model.state_dict(),
+            "ema": ema.shadow,
+            "opt": opt.state_dict(),
+            "scaler": scaler.state_dict(),
+            "cfg": vars(cfg)
         }
-        metrics_log.append(rec)
-        logs_dir = record_path / 'logs'
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        with (logs_dir / cfg.LOG.METRICS_JSON).open('w', encoding='utf-8') as f:
-            json.dump(metrics_log, f, indent=2, ensure_ascii=False)
-        try:
-            pd.DataFrame(metrics_log).to_excel(logs_dir / cfg.LOG.METRICS_XLSX, index=False)
-        except Exception as e:
-            print('[warn] 写 Excel 失败：', e)
-
-        metric_name = cfg.LOG.MONITOR.lower()
-        cur_metric = val_psnr if metric_name == 'psnr' else val_ssim
-        better = (cur_metric > best_metric) if cfg.LOG.MODE.lower() == 'max' else (cur_metric < best_metric)
-        if better:
-            best_metric = cur_metric
-            state = {
-                'step': global_step,
-                'model': model.state_dict(),
-                'ema': ema.shadow,
-                'opt': opt.state_dict(),
-                'scaler': scaler.state_dict(),
-                'cfg': vars(cfg)
-            }
-            best_path = ckpt_dir / 'best.pt'
-            torch.save(state, best_path)
-            print(f"[CKPT] 更新最优 {metric_name}={cur_metric:.4f} → 保存 {best_path}")
-
+        ckpt_path = ckpt_dir / f"ckpt_{global_step:07d}.pt"
+        torch.save(state, ckpt_path)
 
 if __name__ == "__main__":
     main()
