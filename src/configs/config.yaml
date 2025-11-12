@@ -1,8 +1,8 @@
 PROJECT:
   NAME: "UnderwaterImageEnhanced-Diffusion"
   ROOT_PATH: "."
-  TRAIN_DIR: "/public/home/hnust15874739861/pro/UnderwaterImageEnhanced/dataset/UIEB19/Train"   # 修改为你的路径
-  VAL_DIR: "/public/home/hnust15874739861/pro/UnderwaterImageEnhanced/dataset/UIEB19/Val"       # 修改为你的路径
+  TRAIN_DIR: "/public/home/hnust15874739861/pro/UnderwaterImageEnhanced/dataset/LSUI19"   # 修改为你的路径
+  VAL_DIR: "/public/home/hnust15874739861/pro/UnderwaterImageEnhanced/dataset/LSUI19"       # 修改为你的路径
   EXPT_RECORD_DIR: "/public/home/hnust15874739861/pro/DiffusionProject/expt_record"         # 训练记录、权重、样例
 
 DATASET:
