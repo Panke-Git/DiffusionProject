@@ -18,18 +18,18 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from src.config.config import Config
-from src.data.paired_dataset import PairedFolder
-from src.diffusion.scheduler import Diffusion
-from src.models.diffusion_unet import UNet
-from src.utils.ema import EMA
-from src.utils.metrics import psnr as psnr_metric, ssim as ssim_metric, to01
-from src.utils.record_utils import make_train_path, save_train_config
-from src.utils.train_utils import seed_everything
+from config.config import Config
+from data.paired_dataset import PairedFolder
+from diffusion.scheduler import Diffusion
+from models.diffusion_unet import UNet
+from utils.ema import EMA
+from utils.metrics import psnr as psnr_metric, ssim as ssim_metric, to01
+from utils.record_utils import make_train_path, save_train_config
+from utils.train_utils import seed_everything
 
 def build_dataloaders(cfg):
-    train_ds = PairedFolder(cfg.PROJECT.TRAIN_DIR, 'train', cfg.DATASET.IMG_H, cfg.DATASET.INPUT, cfg.DATASET.TARGET, augment=True)
-    val_ds   = PairedFolder(cfg.PROJECT.VAL_DIR, 'val',   cfg.DATASET.IMG_H, cfg.DATASET.INPUT, cfg.DATASET.TARGET, augment=False)
+    train_ds = PairedFolder(cfg.PROJECT.TRAIN_DIR, 'Train', cfg.DATASET.IMG_H, cfg.DATASET.INPUT, cfg.DATASET.TARGET, augment=True)
+    val_ds   = PairedFolder(cfg.PROJECT.VAL_DIR, 'Val',   cfg.DATASET.IMG_H, cfg.DATASET.INPUT, cfg.DATASET.TARGET, augment=False)
     train_dl = DataLoader(train_ds, batch_size=cfg.TRAIN.BATCH_SIZE, shuffle=True, num_workers=8, pin_memory=True, drop_last=True)
     val_dl   = DataLoader(val_ds,   batch_size=max(1, cfg.TRAIN.BATCH_SIZE//2), shuffle=False, num_workers=8, pin_memory=True, drop_last=False)
     return train_dl, val_dl
@@ -91,16 +91,18 @@ def train_one_epoch(model: UNet, diffusion: Diffusion, train_dl: DataLoader, opt
         noise = torch.randn_like(x0)
         x_t = diffusion.q_sample(x0, t, noise)
 
-        with torch.cuda.amp.autocast(enabled=cfg.TRAIN.AMP):
+        amp_enabled = bool(cfg.TRAIN.AMP) and (device.type == "cuda")
+        with torch.amp.autocast("cuda", enabled=amp_enabled):
             eps_pred = model(x_t, y, t)
             loss = F.mse_loss(eps_pred, noise)
-            if cfg.TRAIN.get("RECON_LAMBDA", 0.0) and cfg.TRAIN.RECON_LAMBDA > 0:
+            recon_lambda = float(getattr(cfg.TRAIN, "RECON_LAMBDA", 0.0) or 0.0)
+            if recon_lambda > 0:
                 a_bar = diffusion.alphas_cumprod[t]
                 while a_bar.dim() < x0.dim():
                     a_bar = a_bar.unsqueeze(-1)
                 x0_pred = (x_t - torch.sqrt(1 - a_bar) * eps_pred) / torch.sqrt(a_bar)
                 loss_rec = F.l1_loss(to01(x0_pred), to01(x0))
-                loss = loss + cfg.TRAIN.RECON_LAMBDA * loss_rec
+                loss = loss + recon_lambda * loss_rec
 
         loss = loss / max(1, cfg.TRAIN.ACCUM_STEPS)
         scaler.scale(loss).backward()
@@ -115,6 +117,9 @@ def train_one_epoch(model: UNet, diffusion: Diffusion, train_dl: DataLoader, opt
             ema.update(model)
             global_step += 1
 
+            running_loss += (loss.item() * max(1, cfg.TRAIN.ACCUM_STEPS))
+            num_iters += 1
+
             if writer is not None and global_step % cfg.LOG.LOG_INTERVAL == 0:
                 writer.add_scalar('train/loss', running_loss / max(1, num_iters), global_step)
     avg_loss = running_loss / max(1, num_iters)
@@ -122,8 +127,8 @@ def train_one_epoch(model: UNet, diffusion: Diffusion, train_dl: DataLoader, opt
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--cfg", default='./config/config.py',  type=str, required=True, help="YAML 配置文件路径")
-    ap.add_argument("--eval_only", action="store_true", help="仅做验证/采样")
+    ap.add_argument("--cfg", default=str((Path(__file__).parent / "configs" / "config.yaml").resolve()),  type=str, required=False, help="YAML 配置文件路径")
+    ap.add_argument("--eval_only", action="store_true", default=False, help="仅做验证/采样")
     args = ap.parse_args()
 
     cfg = Config.load(args.cfg)
@@ -163,7 +168,7 @@ def main():
     diffusion = Diffusion(steps=cfg.SCHEDULER.STEPS, schedule="cosine", device=device)
 
     opt = torch.optim.AdamW(model.parameters(), lr=float(cfg.TRAIN.LR), weight_decay=float(cfg.TRAIN.WEIGHT_DECAY))
-    scaler = torch.cuda.amp.GradScaler(enabled=bool(cfg.TRAIN.AMP))
+    scaler = torch.amp.GradScaler("cuda", enabled=bool(cfg.TRAIN.AMP) and (device.type == "cuda"))
     # 学习率计划（与用户风格一致：CosineAnnealingLR 以 epoch 为周期也可，这里按 step 不细化，保持简洁）
     # 可按需接入 torch.optim.lr_scheduler.CosineAnnealingLR
 
