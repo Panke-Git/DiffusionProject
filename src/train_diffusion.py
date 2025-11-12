@@ -35,41 +35,59 @@ def build_dataloaders(cfg):
     return train_dl, val_dl
 
 @torch.no_grad()
-def validate(model: UNet, ema: EMA, diffusion: Diffusion, val_dl: DataLoader, device, cfg, record_path: Path, step: int, writer: SummaryWriter | None):
-    # 拷贝 EMA 权重用于评估
+def validate(model, ema, diffusion, val_dl, device, cfg, record_path, step, writer):
+    # 复制 EMA 权重
     ema_model = UNet(image_size=cfg.MODEL.IMAGE_SIZE, in_channels=6, out_channels=3,
                      base_channels=cfg.MODEL.BASE_CHANNELS, channel_mults=tuple(cfg.MODEL.CHANNEL_MULTS),
                      num_res_blocks=cfg.MODEL.NUM_RES_BLOCKS, attn_resolutions=tuple(cfg.MODEL.ATTN_RES),
-                     time_pos_dim=cfg.MODEL.TIME_POS_DIM, time_dim=cfg.MODEL.TIME_DIM, dropout=cfg.MODEL.DROPOUT).to(device)
-    ema.copy_to(ema_model)
-    ema_model.eval()
+                     time_pos_dim=cfg.MODEL.TIME_POS_DIM, time_dim=cfg.MODEL.TIME_DIM,
+                     dropout=cfg.MODEL.DROPOUT).to(device)
+    ema.copy_to(ema_model); ema_model.eval()
+
+    from torchvision.utils import save_image
+
+    def to01_safe(x):
+        # 训练里是 [-1,1]，这里统一映射回 [0,1]
+        return ((x.clamp(-1, 1) + 1) / 2).clamp(0, 1)
 
     psnr_total, ssim_total, n_batches = 0.0, 0.0, 0
-    sample_dir = record_path / 'samples' / f"step_{step:07d}"
-    sample_dir.mkdir(parents=True, exist_ok=True)
+    sample_dir = (record_path / 'samples' / f"step_{step:07d}"); sample_dir.mkdir(parents=True, exist_ok=True)
 
     pbar = tqdm(val_dl, desc="[Val]")
     for i, batch in enumerate(pbar):
-        y = batch["y"].to(device) * 2 - 1  # [-1,1]
+        # y: 输入；x0: GT（两者都先映射到 [-1,1]）
+        y  = batch["y"].to(device)  * 2 - 1
         x0 = batch["x0"].to(device) * 2 - 1
 
-        # img2img 起点：从 y 加噪
-        x_hat = diffusion.ddim_sample(ema_model, to01(y)*2-1, image_size=cfg.MODEL.IMAGE_SIZE,
-                                      steps=cfg.SCHEDULER.SAMPLE_STEPS, eta=cfg.SCHEDULER.SAMPLE_ETA,
-                                      start_from_y=cfg.EVAL.USE_IMG2IMG_START)
+        # —— 关键：采样尺寸对齐到 y 的真实尺寸；条件直接传 y（[-1,1]）——
+        H = y.shape[-1]
+        x_hat = diffusion.ddim_sample(
+            ema_model,
+            y=y,
+            image_size=H,
+            steps=cfg.SCHEDULER.SAMPLE_STEPS,
+            eta=cfg.SCHEDULER.SAMPLE_ETA,
+            start_from_y=cfg.EVAL.USE_IMG2IMG_START
+        )
 
-        x_hat01 = to01(x_hat); x001 = to01(x0)
+        # 断言形状与数值域；一旦不满足，直接暴露采样实现的问题
+        assert x_hat.shape == x0.shape == y.shape, f"shape mismatch: pred={x_hat.shape}, x0={x0.shape}, y={y.shape}"
+        x_hat = x_hat.clamp(-1, 1)
 
-        # 计算指标
+        # 计算指标（都在 [0,1]）
+        x_hat01, x001, y01 = to01_safe(x_hat), to01_safe(x0), to01_safe(y)
         psnr_val = psnr_metric(x_hat01, x001)
         ssim_val = ssim_metric(x_hat01, x001)
         psnr_total += psnr_val; ssim_total += ssim_val; n_batches += 1
 
+        # —— 自检：输入对 GT 的 PSNR ——（应显著低于 pred 对 GT）
+        if i == 0:
+            psnr_in = psnr_metric(y01, x001)
+            print(f"[Val:debug] PSNR(input,gt)={psnr_in:.2f}  PSNR(pred,gt)={psnr_val:.2f}")
+
         if i < cfg.EVAL.NUM_VIS_BATCH:
-            # 保存 y | x_hat | x0 便于肉眼对比
-            from torchvision.utils import save_image
-            grid = torch.cat([to01(y), x_hat01, x001], dim=0)
-            save_image(grid, sample_dir / f"val_{i:03d}.png", nrow=y.size(0))
+            grid = torch.cat([y01, x_hat01, x001], dim=0)
+            save_image(grid, sample_dir / f"val_{i:03d}.png", nrow=y.size(0), padding=2)
 
     m_psnr = psnr_total / max(1, n_batches)
     m_ssim = ssim_total / max(1, n_batches)
@@ -95,16 +113,24 @@ def train_one_epoch(model: UNet, diffusion: Diffusion, train_dl: DataLoader, opt
         with torch.amp.autocast("cuda", enabled=amp_enabled):
             eps_pred = model(x_t, y, t)
             loss = F.mse_loss(eps_pred, noise)
-            recon_lambda = float(getattr(cfg.TRAIN, "RECON_LAMBDA", 0.0) or 0.0)
-            if recon_lambda > 0:
-                a_bar = diffusion.alphas_cumprod[t]
+        recon_lambda = float(getattr(cfg.TRAIN, "RECON_LAMBDA", 0.0) or 0.0)
+        if recon_lambda > 0:
+            # —— 用 FP32 + clamp，避免 /sqrt(a_bar) 下溢 → NaN ——
+            with torch.amp.autocast("cuda", enabled=False):
+                a_bar = diffusion.alphas_cumprod[t].float().clamp_min(1e-5)
                 while a_bar.dim() < x0.dim():
                     a_bar = a_bar.unsqueeze(-1)
-                x0_pred = (x_t - torch.sqrt(1 - a_bar) * eps_pred) / torch.sqrt(a_bar)
-                loss_rec = F.l1_loss(to01(x0_pred), to01(x0))
-                loss = loss + recon_lambda * loss_rec
+                x0_pred = (x_t.float() - torch.sqrt(1 - a_bar) * eps_pred.float()) / torch.sqrt(a_bar)
+                # 在像素域 [0,1] 上做 L1
+                loss_rec = F.l1_loss(((x0_pred + 1) / 2).clamp(0, 1), ((x0 + 1) / 2).clamp(0, 1))
+            loss = loss + recon_lambda * loss_rec
 
         loss = loss / max(1, cfg.TRAIN.ACCUM_STEPS)
+
+        if not torch.isfinite(loss):
+            print('[warn] non-finite loss, skip batch');
+            opt.zero_grad(set_to_none=True);
+            continue
         scaler.scale(loss).backward()
 
         if (it + 1) % max(1, cfg.TRAIN.ACCUM_STEPS) == 0:
