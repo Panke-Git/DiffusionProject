@@ -27,20 +27,35 @@ from utils.metrics import psnr as psnr_metric, ssim as ssim_metric, to01
 from utils.record_utils import make_train_path, save_train_config
 from utils.train_utils import seed_everything
 
+
 def build_dataloaders(cfg):
+<<<<<<< HEAD
     train_ds = PairedFolder(cfg.PROJECT.TRAIN_DIR, 'Train', cfg.DATASET.IMG_H, cfg.DATASET.INPUT, cfg.DATASET.TARGET, augment=True)
     val_ds   = PairedFolder(cfg.PROJECT.VAL_DIR, 'Val',   cfg.DATASET.IMG_H, cfg.DATASET.INPUT, cfg.DATASET.TARGET, augment=False)
     train_dl = DataLoader(train_ds, batch_size=cfg.TRAIN.BATCH_SIZE, shuffle=True, num_workers=8, pin_memory=True, drop_last=True)
     val_dl   = DataLoader(val_ds,   batch_size=max(1, cfg.TRAIN.BATCH_SIZE//2), shuffle=False, num_workers=8, pin_memory=True, drop_last=False)
+=======
+    train_ds = PairedFolder(cfg.PROJECT.TRAIN_DIR, 'train', cfg.DATASET.IMG_H, cfg.DATASET.INPUT, cfg.DATASET.TARGET,
+                            augment=True)
+    val_ds = PairedFolder(cfg.PROJECT.VAL_DIR, 'val', cfg.DATASET.IMG_H, cfg.DATASET.INPUT, cfg.DATASET.TARGET,
+                          augment=False)
+    train_dl = DataLoader(train_ds, batch_size=cfg.TRAIN.BATCH_SIZE, shuffle=True, num_workers=8, pin_memory=True,
+                          drop_last=True)
+    val_dl = DataLoader(val_ds, batch_size=max(1, cfg.TRAIN.BATCH_SIZE // 2), shuffle=False, num_workers=8,
+                        pin_memory=True, drop_last=False)
+>>>>>>> 7c7677f79fd0262f4c08893d412e6ff8916dec52
     return train_dl, val_dl
 
+
 @torch.no_grad()
-def validate(model: UNet, ema: EMA, diffusion: Diffusion, val_dl: DataLoader, device, cfg, record_path: Path, step: int, writer: SummaryWriter | None):
+def validate(model: UNet, ema: EMA, diffusion: Diffusion, val_dl: DataLoader, device, cfg, record_path: Path, step: int,
+             writer: SummaryWriter | None):
     # 拷贝 EMA 权重用于评估
     ema_model = UNet(image_size=cfg.MODEL.IMAGE_SIZE, in_channels=6, out_channels=3,
                      base_channels=cfg.MODEL.BASE_CHANNELS, channel_mults=tuple(cfg.MODEL.CHANNEL_MULTS),
                      num_res_blocks=cfg.MODEL.NUM_RES_BLOCKS, attn_resolutions=tuple(cfg.MODEL.ATTN_RES),
-                     time_pos_dim=cfg.MODEL.TIME_POS_DIM, time_dim=cfg.MODEL.TIME_DIM, dropout=cfg.MODEL.DROPOUT).to(device)
+                     time_pos_dim=cfg.MODEL.TIME_POS_DIM, time_dim=cfg.MODEL.TIME_DIM, dropout=cfg.MODEL.DROPOUT).to(
+        device)
     ema.copy_to(ema_model)
     ema_model.eval()
 
@@ -54,16 +69,19 @@ def validate(model: UNet, ema: EMA, diffusion: Diffusion, val_dl: DataLoader, de
         x0 = batch["x0"].to(device) * 2 - 1
 
         # img2img 起点：从 y 加噪
-        x_hat = diffusion.ddim_sample(ema_model, to01(y)*2-1, image_size=cfg.MODEL.IMAGE_SIZE,
+        x_hat = diffusion.ddim_sample(ema_model, to01(y) * 2 - 1, image_size=cfg.MODEL.IMAGE_SIZE,
                                       steps=cfg.SCHEDULER.SAMPLE_STEPS, eta=cfg.SCHEDULER.SAMPLE_ETA,
                                       start_from_y=cfg.EVAL.USE_IMG2IMG_START)
 
-        x_hat01 = to01(x_hat); x001 = to01(x0)
+        x_hat01 = to01(x_hat);
+        x001 = to01(x0)
 
         # 计算指标
         psnr_val = psnr_metric(x_hat01, x001)
         ssim_val = ssim_metric(x_hat01, x001)
-        psnr_total += psnr_val; ssim_total += ssim_val; n_batches += 1
+        psnr_total += psnr_val;
+        ssim_total += ssim_val;
+        n_batches += 1
 
         if i < cfg.EVAL.NUM_VIS_BATCH:
             # 保存 y | x_hat | x0 便于肉眼对比
@@ -79,7 +97,9 @@ def validate(model: UNet, ema: EMA, diffusion: Diffusion, val_dl: DataLoader, de
     print(f"[Val] step={step} PSNR={m_psnr:.3f} SSIM={m_ssim:.4f}")
     return m_psnr, m_ssim
 
-def train_one_epoch(model: UNet, diffusion: Diffusion, train_dl: DataLoader, opt, scaler, device, cfg, ema: EMA, writer: SummaryWriter | None, global_step: int):
+
+def train_one_epoch(model: UNet, diffusion: Diffusion, train_dl: DataLoader, opt, scaler, device, cfg, ema: EMA,
+                    writer: SummaryWriter | None, global_step: int):
     model.train()
     pbar = tqdm(train_dl, desc="[Train]")
     running_loss, num_iters = 0.0, 0
@@ -125,10 +145,16 @@ def train_one_epoch(model: UNet, diffusion: Diffusion, train_dl: DataLoader, opt
     avg_loss = running_loss / max(1, num_iters)
     return global_step, avg_loss
 
+
 def main():
     ap = argparse.ArgumentParser()
+<<<<<<< HEAD
     ap.add_argument("--cfg", default=str((Path(__file__).parent / "configs" / "config.yaml").resolve()),  type=str, required=False, help="YAML 配置文件路径")
     ap.add_argument("--eval_only", action="store_true", default=False, help="仅做验证/采样")
+=======
+    ap.add_argument("--cfg", default='./config/config.py', type=str, required=True, help="YAML 配置文件路径")
+    ap.add_argument("--eval_only", action="store_true", help="仅做验证/采样")
+>>>>>>> 7c7677f79fd0262f4c08893d412e6ff8916dec52
     args = ap.parse_args()
 
     cfg = Config.load(args.cfg)
@@ -140,7 +166,9 @@ def main():
     # 训练记录路径与日志
     start_time = datetime.now().strftime("%Y%m%d_%H%M%S")
     model_name = f"UNetDiffusion_C{cfg.MODEL.BASE_CHANNELS}_S{cfg.SCHEDULER.STEPS}"
+    # 生成试验记录的文件夹和保存最好的模型的文件夹；
     record_path, ckpt_dir = make_train_path(cfg.PROJECT.EXPT_RECORD_DIR, model_name, start_time)
+    # 保存训练配置
     cfg_path = save_train_config(record_path,
                                  model=model_name,
                                  dataset_train=cfg.PROJECT.TRAIN_DIR,
@@ -192,12 +220,14 @@ def main():
     import json, pandas as pd
 
     for epoch in range(cfg.TRAIN.EPOCHS):
-        global_step, avg_loss = train_one_epoch(model, diffusion, train_dl, opt, scaler, device, cfg, ema, writer, global_step)
+        global_step, avg_loss = train_one_epoch(model, diffusion, train_dl, opt, scaler, device, cfg, ema, writer,
+                                                global_step)
 
-        val_psnr, val_ssim = validate(model, ema, diffusion, val_dl, device, cfg, record_path, step=global_step, writer=writer)
+        val_psnr, val_ssim = validate(model, ema, diffusion, val_dl, device, cfg, record_path, step=global_step,
+                                      writer=writer)
         lr_now = float(opt.param_groups[0]['lr'])
         rec = {
-            'epoch': int(epoch+1),
+            'epoch': int(epoch + 1),
             'global_step': int(global_step),
             'train_loss': float(avg_loss),
             'val_psnr': float(val_psnr),
