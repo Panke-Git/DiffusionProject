@@ -12,7 +12,7 @@ DATASET:
   IMG_H: 256
 
 TRAIN:
-  DEVICE: "cuda"
+  DEVICE: "cuda:4"
   SEED: 9861
   BATCH_SIZE: 32
   EPOCHS: 500
