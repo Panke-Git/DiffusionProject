@@ -20,7 +20,7 @@ def make_train_path(root: str | Path, model_name: str, start_time: str) -> tuple
                  └── logs/
     返回：record_path, best_ckpt_dir
     """
-    root = Path(root) / 'exp_record' / model_name / start_time
+    root = Path(root) / model_name / start_time
     (root / "ckpts").mkdir(parents=True, exist_ok=True)
     (root / "samples").mkdir(parents=True, exist_ok=True)
     (root / "logs").mkdir(parents=True, exist_ok=True)
