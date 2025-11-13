@@ -27,12 +27,18 @@ from utils.metrics import psnr as psnr_metric, ssim as ssim_metric, to01
 from utils.record_utils import make_train_path, save_train_config
 from utils.train_utils import seed_everything
 
+
 def build_dataloaders(cfg):
-    train_ds = PairedFolder(cfg.PROJECT.TRAIN_DIR, 'Train', cfg.DATASET.IMG_H, cfg.DATASET.INPUT, cfg.DATASET.TARGET, augment=True)
-    val_ds   = PairedFolder(cfg.PROJECT.VAL_DIR, 'Val',   cfg.DATASET.IMG_H, cfg.DATASET.INPUT, cfg.DATASET.TARGET, augment=False)
-    train_dl = DataLoader(train_ds, batch_size=cfg.TRAIN.BATCH_SIZE, shuffle=True, num_workers=8, pin_memory=True, drop_last=True)
-    val_dl   = DataLoader(val_ds,   batch_size=max(1, cfg.TRAIN.BATCH_SIZE//2), shuffle=False, num_workers=8, pin_memory=True, drop_last=False)
+    train_ds = PairedFolder(cfg.PROJECT.TRAIN_DIR, 'Train', cfg.DATASET.IMG_H, cfg.DATASET.INPUT, cfg.DATASET.TARGET,
+                            augment=True)
+    val_ds = PairedFolder(cfg.PROJECT.VAL_DIR, 'Val', cfg.DATASET.IMG_H, cfg.DATASET.INPUT, cfg.DATASET.TARGET,
+                          augment=False)
+    train_dl = DataLoader(train_ds, batch_size=cfg.TRAIN.BATCH_SIZE, shuffle=True, num_workers=8, pin_memory=True,
+                          drop_last=True)
+    val_dl = DataLoader(val_ds, batch_size=max(1, cfg.TRAIN.BATCH_SIZE // 2), shuffle=False, num_workers=8,
+                        pin_memory=True, drop_last=False)
     return train_dl, val_dl
+
 
 @torch.no_grad()
 def validate(model, ema, diffusion, val_dl, device, cfg, record_path, step, writer):
@@ -42,7 +48,8 @@ def validate(model, ema, diffusion, val_dl, device, cfg, record_path, step, writ
                      num_res_blocks=cfg.MODEL.NUM_RES_BLOCKS, attn_resolutions=tuple(cfg.MODEL.ATTN_RES),
                      time_pos_dim=cfg.MODEL.TIME_POS_DIM, time_dim=cfg.MODEL.TIME_DIM,
                      dropout=cfg.MODEL.DROPOUT).to(device)
-    ema.copy_to(ema_model); ema_model.eval()
+    ema.copy_to(ema_model);
+    ema_model.eval()
 
     from torchvision.utils import save_image
 
@@ -51,23 +58,27 @@ def validate(model, ema, diffusion, val_dl, device, cfg, record_path, step, writ
         return ((x.clamp(-1, 1) + 1) / 2).clamp(0, 1)
 
     psnr_total, ssim_total, n_batches = 0.0, 0.0, 0
-    sample_dir = (record_path / 'samples' / f"step_{step:07d}"); sample_dir.mkdir(parents=True, exist_ok=True)
+    sample_dir = (record_path / 'samples' / f"step_{step:07d}");
+    sample_dir.mkdir(parents=True, exist_ok=True)
 
     pbar = tqdm(val_dl, desc="[Val]")
     for i, batch in enumerate(pbar):
         # y: 输入；x0: GT（两者都先映射到 [-1,1]）
-        y  = batch["y"].to(device)  * 2 - 1
+        y = batch["y"].to(device) * 2 - 1
         x0 = batch["x0"].to(device) * 2 - 1
 
         # —— 关键：采样尺寸对齐到 y 的真实尺寸；条件直接传 y（[-1,1]）——
         H = y.shape[-1]
+        img2img_strength = float(getattr(getattr(cfg, "EVAL", cfg), "STRENGTH", 0.35))  # 建议放到 cfg.EVAL.STRENGTH
+        start_t = int((diffusion.steps - 1) * img2img_strength)
         x_hat = diffusion.ddim_sample(
             ema_model,
             y=y,
-            image_size=H,
-            steps=cfg.SCHEDULER.SAMPLE_STEPS,
-            eta=cfg.SCHEDULER.SAMPLE_ETA,
-            start_from_y=cfg.EVAL.USE_IMG2IMG_START
+            image_size=y,
+            steps=max(50, cfg.SCHEDULER.SAMPLE_STEPS),
+            eta=0.0,
+            start_from_y=True,
+            start_t = start_t,
         )
 
         # 断言形状与数值域；一旦不满足，直接暴露采样实现的问题
@@ -78,11 +89,13 @@ def validate(model, ema, diffusion, val_dl, device, cfg, record_path, step, writ
         x_hat01, x001, y01 = to01_safe(x_hat), to01_safe(x0), to01_safe(y)
         psnr_val = psnr_metric(x_hat01, x001)
         ssim_val = ssim_metric(x_hat01, x001)
-        psnr_total += psnr_val; ssim_total += ssim_val; n_batches += 1
+        psnr_total += psnr_val;
+        ssim_total += ssim_val;
+        n_batches += 1
 
         # —— 自检：输入对 GT 的 PSNR ——（应显著低于 pred 对 GT）
         if i == 0:
-            psnr_in = psnr_metric(y01, x001)
+            psnr_in = psnr_metric(((y + 1) / 2).clamp(0, 1), ((x0 + 1) / 2).clamp(0, 1))
             print(f"[Val:debug] PSNR(input,gt)={psnr_in:.2f}  PSNR(pred,gt)={psnr_val:.2f}")
 
         if i < cfg.EVAL.NUM_VIS_BATCH:
@@ -97,7 +110,9 @@ def validate(model, ema, diffusion, val_dl, device, cfg, record_path, step, writ
     print(f"[Val] step={step} PSNR={m_psnr:.3f} SSIM={m_ssim:.4f}")
     return m_psnr, m_ssim
 
-def train_one_epoch(model: UNet, diffusion: Diffusion, train_dl: DataLoader, opt, scaler, device, cfg, ema: EMA, writer: SummaryWriter | None, global_step: int):
+
+def train_one_epoch(model: UNet, diffusion: Diffusion, train_dl: DataLoader, opt, scaler, device, cfg, ema: EMA,
+                    writer: SummaryWriter | None, global_step: int):
     model.train()
     pbar = tqdm(train_dl, desc="[Train]")
     running_loss, num_iters = 0.0, 0
@@ -113,15 +128,16 @@ def train_one_epoch(model: UNet, diffusion: Diffusion, train_dl: DataLoader, opt
         with torch.amp.autocast("cuda", enabled=amp_enabled):
             eps_pred = model(x_t, y, t)
             loss = F.mse_loss(eps_pred, noise)
+
         recon_lambda = float(getattr(cfg.TRAIN, "RECON_LAMBDA", 0.0) or 0.0)
         if recon_lambda > 0:
-            # —— 用 FP32 + clamp，避免 /sqrt(a_bar) 下溢 → NaN ——
             with torch.amp.autocast("cuda", enabled=False):
-                a_bar = diffusion.alphas_cumprod[t].float().clamp_min(1e-5)
+                a_bar = diffusion.alphas_cumprod[t].float().clamp_min(1e-5)  # ← 统一加 clamp_min
+                if recon_lambda > 0 and it % 200 == 0:
+                    print('[dbg] a_bar range:', float(a_bar.min()), float(a_bar.max()))
                 while a_bar.dim() < x0.dim():
                     a_bar = a_bar.unsqueeze(-1)
                 x0_pred = (x_t.float() - torch.sqrt(1 - a_bar) * eps_pred.float()) / torch.sqrt(a_bar)
-                # 在像素域 [0,1] 上做 L1
                 loss_rec = F.l1_loss(((x0_pred + 1) / 2).clamp(0, 1), ((x0 + 1) / 2).clamp(0, 1))
             loss = loss + recon_lambda * loss_rec
 
@@ -151,9 +167,11 @@ def train_one_epoch(model: UNet, diffusion: Diffusion, train_dl: DataLoader, opt
     avg_loss = running_loss / max(1, num_iters)
     return global_step, avg_loss
 
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--cfg", default=str((Path(__file__).parent / "configs" / "config.yaml").resolve()),  type=str, required=False, help="YAML 配置文件路径")
+    ap.add_argument("--cfg", default=str((Path(__file__).parent / "configs" / "config.yaml").resolve()), type=str,
+                    required=False, help="YAML 配置文件路径")
     ap.add_argument("--eval_only", action="store_true", default=False, help="仅做验证/采样")
     args = ap.parse_args()
 
@@ -218,12 +236,14 @@ def main():
     import json, pandas as pd
 
     for epoch in range(cfg.TRAIN.EPOCHS):
-        global_step, avg_loss = train_one_epoch(model, diffusion, train_dl, opt, scaler, device, cfg, ema, writer, global_step)
+        global_step, avg_loss = train_one_epoch(model, diffusion, train_dl, opt, scaler, device, cfg, ema, writer,
+                                                global_step)
 
-        val_psnr, val_ssim = validate(model, ema, diffusion, val_dl, device, cfg, record_path, step=global_step, writer=writer)
+        val_psnr, val_ssim = validate(model, ema, diffusion, val_dl, device, cfg, record_path, step=global_step,
+                                      writer=writer)
         lr_now = float(opt.param_groups[0]['lr'])
         rec = {
-            'epoch': int(epoch+1),
+            'epoch': int(epoch + 1),
             'global_step': int(global_step),
             'train_loss': float(avg_loss),
             'val_psnr': float(val_psnr),
