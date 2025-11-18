@@ -108,13 +108,15 @@ def validate(model, noise_scheduler, dataloader, device,
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, required=True,
+    parser.add_argument('--config', type=str, default='configs/config.yaml',
                         help='path to YAML config file')
     parser.add_argument('--model_name', type=str, default='model1',
                         help='model name used as subfolder under SAVE_DIR')
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    print(cfg.TRAIN.LR)
+    print(type(cfg.TRAIN.LR))
 
     device = cfg.TRAIN.DEVICE if hasattr(cfg.TRAIN, 'DEVICE') else 'cuda:0'
     device = torch.device(device if torch.cuda.is_available() else 'cpu')

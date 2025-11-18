@@ -27,4 +27,13 @@ def dict_to_namespace(d):
 def load_config(cfg_path: str):
     with open(cfg_path, 'r') as f:
         cfg_dict = yaml.safe_load(f)
+    print(cfg_dict)  # 打印配置文件的内容
+
+    if 'TRAIN' in cfg_dict:
+        for key in ['LR', 'BATCH_SIZE', 'IMG_H', 'IMG_W', 'EPOCHS', 'TIMESTEPS', 'NUM_WORKERS', 'RECON_LAMBDA']:  # 按需添加字段
+            if key in cfg_dict['TRAIN']:
+                # 检查是否是字符串类型，如果是，则转换为浮动数值
+                if isinstance(cfg_dict['TRAIN'][key], str):
+                    cfg_dict['TRAIN'][key] = float(cfg_dict['TRAIN'][key])
+
     return dict_to_namespace(cfg_dict)
