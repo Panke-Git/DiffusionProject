@@ -5,258 +5,257 @@
     @Time: 2025/11/09
     @Email: None
 """
-from __future__ import annotations
-import argparse
-import math
+# train_ddpm.py
 import os
-from datetime import datetime
+import json
+import argparse
+import random
+import shutil
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
+from torch import optim
 
-from config.config import Config
-from data.paired_dataset import PairedFolder
-from diffusion.scheduler import Diffusion
-from models.diffusion_unet import UNet
-from utils.ema import EMA
-from utils.metrics import psnr as psnr_metric, ssim as ssim_metric, to01
-from utils.record_utils import make_train_path, save_train_config
-from utils.train_utils import seed_everything
+from config_utils import load_config
+from datasets.pair_dataset import UnderwaterPairDataset
+from models.unet_conditional_ddpm import UNetConditional
+from diffusion.ddpm_scheduler import DDPMNoiseScheduler
 
-def build_dataloaders(cfg):
-    train_ds = PairedFolder(cfg.PROJECT.TRAIN_DIR, 'Train', cfg.DATASET.IMG_H, cfg.DATASET.INPUT, cfg.DATASET.TARGET, augment=True)
-    val_ds   = PairedFolder(cfg.PROJECT.VAL_DIR, 'Val',   cfg.DATASET.IMG_H, cfg.DATASET.INPUT, cfg.DATASET.TARGET, augment=False)
-    train_dl = DataLoader(train_ds, batch_size=cfg.TRAIN.BATCH_SIZE, shuffle=True, num_workers=8, pin_memory=True, drop_last=True)
-    val_dl   = DataLoader(val_ds,   batch_size=max(1, cfg.TRAIN.BATCH_SIZE//2), shuffle=False, num_workers=8, pin_memory=True, drop_last=False)
-    return train_dl, val_dl
+
+def set_seed(seed: int = 42):
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+def train_one_epoch(model, noise_scheduler, dataloader, optimizer, device,
+                    timesteps, recon_lambda=0.0):
+    model.train()
+    total_loss = 0.0
+    num_batches = 0
+
+    for batch in dataloader:
+        x_inp, y_gt, _ = batch
+        x_inp = x_inp.to(device)  # 条件 input
+        y_gt = y_gt.to(device)    # ground truth
+
+        bsz = y_gt.size(0)
+        t = torch.randint(0, timesteps, (bsz,), device=device).long()
+
+        noisy_y, noise = noise_scheduler.q_sample(y_gt, t)
+        model_input = torch.cat([noisy_y, x_inp], dim=1)  # [B,6,H,W]
+
+        noise_pred = model(model_input, t)
+
+        loss = F.mse_loss(noise_pred, noise)
+
+        if recon_lambda > 0.0:
+            a_bar = noise_scheduler.alphas_cumprod[t].view(-1, 1, 1, 1)
+            a_bar = a_bar.clamp_min(1e-5)
+            # 反推 y0_pred
+            y0_pred = (noisy_y - torch.sqrt(1.0 - a_bar) * noise_pred) / torch.sqrt(a_bar)
+            # 映射回 [0,1] 再做 L1
+            rec_loss = F.l1_loss(((y0_pred + 1.0) / 2.0).clamp(0.0, 1.0),
+                                 ((y_gt + 1.0) / 2.0).clamp(0.0, 1.0))
+            loss = loss + recon_lambda * rec_loss
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        num_batches += 1
+
+    return total_loss / max(1, num_batches)
+
 
 @torch.no_grad()
-def validate(model, ema, diffusion, val_dl, device, cfg, record_path, step, writer):
-    # 复制 EMA 权重
-    ema_model = UNet(image_size=cfg.MODEL.IMAGE_SIZE, in_channels=6, out_channels=3,
-                     base_channels=cfg.MODEL.BASE_CHANNELS, channel_mults=tuple(cfg.MODEL.CHANNEL_MULTS),
-                     num_res_blocks=cfg.MODEL.NUM_RES_BLOCKS, attn_resolutions=tuple(cfg.MODEL.ATTN_RES),
-                     time_pos_dim=cfg.MODEL.TIME_POS_DIM, time_dim=cfg.MODEL.TIME_DIM,
-                     dropout=cfg.MODEL.DROPOUT).to(device)
-    ema.copy_to(ema_model); ema_model.eval()
+def validate(model, noise_scheduler, dataloader, device,
+             timesteps, recon_lambda=0.0):
+    model.eval()
+    total_loss = 0.0
+    num_batches = 0
 
-    from torchvision.utils import save_image
+    for batch in dataloader:
+        x_inp, y_gt, _ = batch
+        x_inp = x_inp.to(device)
+        y_gt = y_gt.to(device)
 
-    def to01_safe(x):
-        # 训练里是 [-1,1]，这里统一映射回 [0,1]
-        return ((x.clamp(-1, 1) + 1) / 2).clamp(0, 1)
+        bsz = y_gt.size(0)
+        t = torch.randint(0, timesteps, (bsz,), device=device).long()
 
-    psnr_total, ssim_total, n_batches = 0.0, 0.0, 0
-    sample_dir = (record_path / 'samples' / f"step_{step:07d}"); sample_dir.mkdir(parents=True, exist_ok=True)
+        noisy_y, noise = noise_scheduler.q_sample(y_gt, t)
+        model_input = torch.cat([noisy_y, x_inp], dim=1)
 
-    pbar = tqdm(val_dl, desc="[Val]")
-    for i, batch in enumerate(pbar):
-        # y: 输入；x0: GT（两者都先映射到 [-1,1]）
-        y  = batch["y"].to(device)  * 2 - 1
-        x0 = batch["x0"].to(device) * 2 - 1
+        noise_pred = model(model_input, t)
+        loss = F.mse_loss(noise_pred, noise)
 
-        # —— 关键：采样尺寸对齐到 y 的真实尺寸；条件直接传 y（[-1,1]）——
-        H = y.shape[-1]
-        x_hat = diffusion.ddim_sample(
-            ema_model,
-            y=y,
-            image_size=H,
-            steps=cfg.SCHEDULER.SAMPLE_STEPS,
-            eta=cfg.SCHEDULER.SAMPLE_ETA,
-            start_from_y=cfg.EVAL.USE_IMG2IMG_START
-        )
+        if recon_lambda > 0.0:
+            a_bar = noise_scheduler.alphas_cumprod[t].view(-1, 1, 1, 1)
+            a_bar = a_bar.clamp_min(1e-5)
+            y0_pred = (noisy_y - torch.sqrt(1.0 - a_bar) * noise_pred) / torch.sqrt(a_bar)
+            rec_loss = F.l1_loss(((y0_pred + 1.0) / 2.0).clamp(0.0, 1.0),
+                                 ((y_gt + 1.0) / 2.0).clamp(0.0, 1.0))
+            loss = loss + recon_lambda * rec_loss
 
-        # 断言形状与数值域；一旦不满足，直接暴露采样实现的问题
-        assert x_hat.shape == x0.shape == y.shape, f"shape mismatch: pred={x_hat.shape}, x0={x0.shape}, y={y.shape}"
-        x_hat = x_hat.clamp(-1, 1)
+        total_loss += loss.item()
+        num_batches += 1
 
-        # 计算指标（都在 [0,1]）
-        x_hat01, x001, y01 = to01_safe(x_hat), to01_safe(x0), to01_safe(y)
-        psnr_val = psnr_metric(x_hat01, x001)
-        ssim_val = ssim_metric(x_hat01, x001)
-        psnr_total += psnr_val; ssim_total += ssim_val; n_batches += 1
+    return total_loss / max(1, num_batches)
 
-        # —— 自检：输入对 GT 的 PSNR ——（应显著低于 pred 对 GT）
-        if i == 0:
-            psnr_in = psnr_metric(y01, x001)
-            print(f"[Val:debug] PSNR(input,gt)={psnr_in:.2f}  PSNR(pred,gt)={psnr_val:.2f}")
-
-        if i < cfg.EVAL.NUM_VIS_BATCH:
-            grid = torch.cat([y01, x_hat01, x001], dim=0)
-            save_image(grid, sample_dir / f"val_{i:03d}.png", nrow=y.size(0), padding=2)
-
-    m_psnr = psnr_total / max(1, n_batches)
-    m_ssim = ssim_total / max(1, n_batches)
-    if writer is not None:
-        writer.add_scalar("val/psnr", m_psnr, step)
-        writer.add_scalar("val/ssim", m_ssim, step)
-    print(f"[Val] step={step} PSNR={m_psnr:.3f} SSIM={m_ssim:.4f}")
-    return m_psnr, m_ssim
-
-def train_one_epoch(model: UNet, diffusion: Diffusion, train_dl: DataLoader, opt, scaler, device, cfg, ema: EMA, writer: SummaryWriter | None, global_step: int):
-    model.train()
-    pbar = tqdm(train_dl, desc="[Train]")
-    running_loss, num_iters = 0.0, 0
-    for it, batch in enumerate(pbar):
-        y = batch["y"].to(device) * 2 - 1  # [-1,1]
-        x0 = batch["x0"].to(device) * 2 - 1
-        B = y.size(0)
-        t = torch.randint(0, diffusion.steps, (B,), device=device, dtype=torch.long)
-        noise = torch.randn_like(x0)
-        x_t = diffusion.q_sample(x0, t, noise)
-
-        amp_enabled = bool(cfg.TRAIN.AMP) and (device.type == "cuda")
-        with torch.amp.autocast("cuda", enabled=amp_enabled):
-            eps_pred = model(x_t, y, t)
-            loss = F.mse_loss(eps_pred, noise)
-        recon_lambda = float(getattr(cfg.TRAIN, "RECON_LAMBDA", 0.0) or 0.0)
-        if recon_lambda > 0:
-            # —— 用 FP32 + clamp，避免 /sqrt(a_bar) 下溢 → NaN ——
-            with torch.amp.autocast("cuda", enabled=False):
-                a_bar = diffusion.alphas_cumprod[t].float().clamp_min(1e-5)
-                while a_bar.dim() < x0.dim():
-                    a_bar = a_bar.unsqueeze(-1)
-                x0_pred = (x_t.float() - torch.sqrt(1 - a_bar) * eps_pred.float()) / torch.sqrt(a_bar)
-                # 在像素域 [0,1] 上做 L1
-                loss_rec = F.l1_loss(((x0_pred + 1) / 2).clamp(0, 1), ((x0 + 1) / 2).clamp(0, 1))
-            loss = loss + recon_lambda * loss_rec
-
-        loss = loss / max(1, cfg.TRAIN.ACCUM_STEPS)
-
-        if not torch.isfinite(loss):
-            print('[warn] non-finite loss, skip batch');
-            opt.zero_grad(set_to_none=True);
-            continue
-        scaler.scale(loss).backward()
-
-        if (it + 1) % max(1, cfg.TRAIN.ACCUM_STEPS) == 0:
-            if cfg.TRAIN.GRAD_CLIP and cfg.TRAIN.GRAD_CLIP > 0:
-                scaler.unscale_(opt)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.TRAIN.GRAD_CLIP)
-            scaler.step(opt)
-            scaler.update()
-            opt.zero_grad(set_to_none=True)
-            ema.update(model)
-            global_step += 1
-
-            running_loss += (loss.item() * max(1, cfg.TRAIN.ACCUM_STEPS))
-            num_iters += 1
-
-            if writer is not None and global_step % cfg.LOG.LOG_INTERVAL == 0:
-                writer.add_scalar('train/loss', running_loss / max(1, num_iters), global_step)
-    avg_loss = running_loss / max(1, num_iters)
-    return global_step, avg_loss
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--cfg", default=str((Path(__file__).parent / "configs" / "config.yaml").resolve()),  type=str, required=False, help="YAML 配置文件路径")
-    ap.add_argument("--eval_only", action="store_true", default=False, help="仅做验证/采样")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', type=str, required=True,
+                        help='path to YAML config file')
+    parser.add_argument('--model_name', type=str, default='model1',
+                        help='model name used as subfolder under SAVE_DIR')
+    args = parser.parse_args()
 
-    cfg = Config.load(args.cfg)
+    cfg = load_config(args.config)
 
-    # 设备与随机种子
-    device = torch.device(cfg.TRAIN.DEVICE if torch.cuda.is_available() else "cpu")
-    seed_everything(cfg.TRAIN.SEED)
+    device = cfg.TRAIN.DEVICE if hasattr(cfg.TRAIN, 'DEVICE') else 'cuda:0'
+    device = torch.device(device if torch.cuda.is_available() else 'cpu')
+    set_seed(42)
 
-    # 训练记录路径与日志
-    start_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_name = f"UNetDiffusion_C{cfg.MODEL.BASE_CHANNELS}_S{cfg.SCHEDULER.STEPS}"
-    record_path, ckpt_dir = make_train_path(cfg.PROJECT.EXPT_RECORD_DIR, model_name, start_time)
-    cfg_path = save_train_config(record_path,
-                                 model=model_name,
-                                 dataset_train=cfg.PROJECT.TRAIN_DIR,
-                                 dataset_val=cfg.PROJECT.VAL_DIR,
-                                 lr=float(cfg.TRAIN.LR),
-                                 batch_size=cfg.TRAIN.BATCH_SIZE,
-                                 steps=cfg.SCHEDULER.STEPS,
-                                 sample_steps=cfg.SCHEDULER.SAMPLE_STEPS,
-                                 seed=cfg.TRAIN.SEED)
-    writer = None
+    # ==== 路径与输出目录 ====
+    train_dir = cfg.PROJECT.TRAIN_DIR
+    val_dir = cfg.PROJECT.VAL_DIR
+    save_root = cfg.PROJECT.SAVE_DIR
+
+    model_name = args.model_name
+    exp_dir = Path(save_root) / model_name
+    exp_dir.mkdir(parents=True, exist_ok=True)
+
+    # 备份配置文件
+    cfg_src = Path(args.config)
+    cfg_dst = exp_dir / cfg_src.name
     try:
-        writer = SummaryWriter(log_dir=str(record_path / "logs"))
+        shutil.copy(str(cfg_src), str(cfg_dst))
     except Exception:
-        writer = None
+        pass
 
-    # 数据
-    train_dl, val_dl = build_dataloaders(cfg)
+    # ==== Dataset & DataLoader ====
+    img_h = getattr(cfg.TRAIN, 'IMG_H', 256)
+    img_w = getattr(cfg.TRAIN, 'IMG_W', 256)
+    num_workers = getattr(cfg.TRAIN, 'NUM_WORKERS', 4)
+    batch_size = cfg.TRAIN.BATCH_SIZE
 
-    # 模型 / 调度器 / 优化器
-    model = UNet(image_size=cfg.MODEL.IMAGE_SIZE, in_channels=6, out_channels=3,
-                 base_channels=cfg.MODEL.BASE_CHANNELS, channel_mults=tuple(cfg.MODEL.CHANNEL_MULTS),
-                 num_res_blocks=cfg.MODEL.NUM_RES_BLOCKS, attn_resolutions=tuple(cfg.MODEL.ATTN_RES),
-                 time_pos_dim=cfg.MODEL.TIME_POS_DIM, time_dim=cfg.MODEL.TIME_DIM, dropout=cfg.MODEL.DROPOUT).to(device)
-    ema = EMA(model, decay=cfg.TRAIN.EMA_DECAY)
-    diffusion = Diffusion(steps=cfg.SCHEDULER.STEPS, schedule="cosine", device=device)
+    train_set = UnderwaterPairDataset(
+        root_dir=train_dir,
+        input_subdir=cfg.DATASET.INPUT,
+        target_subdir=cfg.DATASET.TARGET,
+        img_h=img_h,
+        img_w=img_w
+    )
+    val_set = UnderwaterPairDataset(
+        root_dir=val_dir,
+        input_subdir=cfg.DATASET.INPUT,
+        target_subdir=cfg.DATASET.TARGET,
+        img_h=img_h,
+        img_w=img_w
+    )
 
-    opt = torch.optim.AdamW(model.parameters(), lr=float(cfg.TRAIN.LR), weight_decay=float(cfg.TRAIN.WEIGHT_DECAY))
-    scaler = torch.amp.GradScaler("cuda", enabled=bool(cfg.TRAIN.AMP) and (device.type == "cuda"))
-    # 学习率计划（与用户风格一致：CosineAnnealingLR 以 epoch 为周期也可，这里按 step 不细化，保持简洁）
-    # 可按需接入 torch.optim.lr_scheduler.CosineAnnealingLR
+    train_loader = DataLoader(
+        train_set,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True
+    )
+    val_loader = DataLoader(
+        val_set,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True
+    )
 
-    # 仅验证
-    if args.eval_only:
-        # 加载最近的 ckpt
-        ckpts = sorted((record_path.parent / model_name).glob("*/ckpts/ckpt_*.pt"))
-        if not ckpts:
-            print("No checkpoints found under:", record_path.parent / model_name)
-            return
-        state = torch.load(ckpts[-1], map_location=device)
-        model.load_state_dict(state["model"])
-        ema.shadow = state["ema"]
-        validate(model, ema, diffusion, val_dl, device, cfg, record_path, step=state.get("step", 0), writer=writer)
-        return
+    # ==== Model & Optimizer & Scheduler ====
+    model = UNetConditional(
+        in_channels=6,    # [noisy_y(3) + x_input(3)]
+        base_channels=64,
+        channel_mults=(1, 2, 4),
+        time_emb_dim=256,
+        out_channels=3    # 预测噪声 eps
+    ).to(device)
 
-    # 训练循环
-    global_step = 0
-    best_metric = -1e9 if cfg.LOG.MODE.lower() == 'max' else 1e9
-    metrics_log = []
-    import json, pandas as pd
+    # 如果需要加载预训练权重（比如预训练的 UNet），可以在 cfg.TRAIN.WEIGHT 指定
+    if getattr(cfg.TRAIN, 'WEIGHT', ''):
+        weight_path = cfg.TRAIN.WEIGHT
+        print(f'Loading pretrained weights from {weight_path}')
+        state_dict = torch.load(weight_path, map_location=device)
+        # 假设是纯 state_dict
+        model.load_state_dict(state_dict, strict=False)
 
-    for epoch in range(cfg.TRAIN.EPOCHS):
-        global_step, avg_loss = train_one_epoch(model, diffusion, train_dl, opt, scaler, device, cfg, ema, writer, global_step)
+    optimizer = optim.Adam(model.parameters(), lr=cfg.TRAIN.LR)
 
-        val_psnr, val_ssim = validate(model, ema, diffusion, val_dl, device, cfg, record_path, step=global_step, writer=writer)
-        lr_now = float(opt.param_groups[0]['lr'])
-        rec = {
-            'epoch': int(epoch+1),
-            'global_step': int(global_step),
-            'train_loss': float(avg_loss),
-            'val_psnr': float(val_psnr),
-            'val_ssim': float(val_ssim),
-            'lr': lr_now,
-        }
-        metrics_log.append(rec)
-        logs_dir = record_path / 'logs'
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        with (logs_dir / cfg.LOG.METRICS_JSON).open('w', encoding='utf-8') as f:
-            json.dump(metrics_log, f, indent=2, ensure_ascii=False)
-        try:
-            pd.DataFrame(metrics_log).to_excel(logs_dir / cfg.LOG.METRICS_XLSX, index=False)
-        except Exception as e:
-            print('[warn] 写 Excel 失败：', e)
+    timesteps = getattr(cfg.TRAIN, 'TIMESTEPS', 1000)
+    noise_scheduler = DDPMNoiseScheduler(
+        timesteps=timesteps,
+        beta_start=1e-4,
+        beta_end=0.02,
+        device=device
+    )
 
-        metric_name = cfg.LOG.MONITOR.lower()
-        cur_metric = val_psnr if metric_name == 'psnr' else val_ssim
-        better = (cur_metric > best_metric) if cfg.LOG.MODE.lower() == 'max' else (cur_metric < best_metric)
-        if better:
-            best_metric = cur_metric
-            state = {
-                'step': global_step,
-                'model': model.state_dict(),
-                'ema': ema.shadow,
-                'opt': opt.state_dict(),
-                'scaler': scaler.state_dict(),
-                'cfg': vars(cfg)
-            }
-            best_path = ckpt_dir / 'best.pt'
-            torch.save(state, best_path)
-            print(f"[CKPT] 更新最优 {metric_name}={cur_metric:.4f} → 保存 {best_path}")
+    recon_lambda = getattr(cfg.TRAIN, 'RECON_LAMBDA', 0.0)
+
+    # ==== 训练循环 ====
+    num_epochs = cfg.TRAIN.EPOCHS
+    val_every = getattr(cfg.TRAIN, 'VAL_AFTER_EVERY', 1)
+    print_freq = getattr(cfg.TRAIN, 'PRINT_FREQ', 1)
+
+    history = {
+        'epoch': [],
+        'train_loss': [],
+        'val_loss': []
+    }
+    best_val_loss = float('inf')
+    best_epoch = -1
+    best_model_path = exp_dir / 'best_model.pth'
+
+    for epoch in range(1, num_epochs + 1):
+        train_loss = train_one_epoch(
+            model, noise_scheduler, train_loader, optimizer, device,
+            timesteps=timesteps, recon_lambda=recon_lambda
+        )
+
+        if epoch % val_every == 0:
+            val_loss = validate(
+                model, noise_scheduler, val_loader, device,
+                timesteps=timesteps, recon_lambda=recon_lambda
+            )
+        else:
+            val_loss = float('nan')
+
+        history['epoch'].append(epoch)
+        history['train_loss'].append(train_loss)
+        history['val_loss'].append(val_loss)
+
+        # 保存训练曲线到 JSON
+        log_path = exp_dir / 'train_log.json'
+        with open(log_path, 'w') as f:
+            json.dump(history, f, indent=2)
+
+        if epoch % print_freq == 0:
+            print(f"[Epoch {epoch:03d}/{num_epochs:03d}] "
+                  f"Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f}")
+
+        # 只保存 val loss 最好的模型
+        if not (val_loss != val_loss):  # 过滤 NaN
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_epoch = epoch
+                torch.save(model.state_dict(), best_model_path)
+                print(f"  >> New best model at epoch {epoch}, val_loss={val_loss:.6f}, "
+                      f"saved to {best_model_path}")
+
+    print(f"Training finished. Best epoch = {best_epoch}, best val_loss = {best_val_loss:.6f}")
+    print(f"Best model path: {best_model_path}")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
+

@@ -1,55 +1,31 @@
+MODEL:
+  SESSION: "Paxton"
+
 PROJECT:
-  NAME: "UnderwaterImageEnhanced-Diffusion"
-  ROOT_PATH: "."
-  TRAIN_DIR: "/public/home/hnust15874739861/pro/UnderwaterImageEnhanced/dataset/UIEB19/Train"   # 修改为你的路径
-  VAL_DIR: "/public/home/hnust15874739861/pro/UnderwaterImageEnhanced/dataset/UIEB19/Val"       # 修改为你的路径
-  EXPT_RECORD_DIR: "/public/home/hnust15874739861/pro/DiffusionProject"         # 训练记录、权重、样例
+  ROOT_PATH: /public/home/hnust15874739861/pro/UnderwaterImageEnhanced/
+  TRAIN_DIR: /public/home/hnust15874739861/pro/UnderwaterImageEnhanced/dataset/UIEB19/Train
+  VAL_DIR: /public/home/hnust15874739861/pro/UnderwaterImageEnhanced/dataset/UIEB19/Val
+  SAVE_DIR: /public/home/hnust15874739861/pro/UnderwaterImageEnhanced/save_dir
+  EXPT_RECORD_DIR: /public/home/hnust15874739861/pro/UnderwaterImageEnhanced/expt_record
+  LOG_DIR: /public/home/hnust15874739861/pro/UnderwaterImageEnhanced/log
+  VISUAL_DATA: /public/home/hnust15874739861/pro/UnderwaterImageEnhanced/dataset/visual_img
 
 DATASET:
-  INPUT: "input"
-  TARGET: "GT"
-  IMG_W: 256
-  IMG_H: 256
+  INPUT: 'input'
+  TARGET: 'GT'
 
 TRAIN:
-  DEVICE: "cuda"
-  SEED: 9861
-  BATCH_SIZE: 16
+  DEVICE: 'cuda:5'
+  VAL_AFTER_EVERY: 1
+  RESUME: False           # 这里暂时只用于加载预训练权重
+  WEIGHT: ''              # 如果需要用预训练模型，可以填一个 .pth
+  IMG_H: 256
+  IMG_W: 256
+  ORI: False
+  BATCH_SIZE: 32
+  LR: 2e-4
   EPOCHS: 500
-  LR: 5e-5
-  WEIGHT_DECAY: 0.0
-  ACCUM_STEPS: 1
-  GRAD_CLIP: 1.0
-  AMP: true
-  EMA_DECAY: 0.9999
-
-SCHEDULER:
-  TYPE: "cosine"      # cosine
-  STEPS: 1000         # 扩散总步数（训练日程）
-  SAMPLE_STEPS: 30    # 验证/采样的步数
-  SAMPLE_ETA: 0.0     # DDIM eta; 0=确定性
-
-MODEL:
-  IMAGE_SIZE: 256
-  BASE_CHANNELS: 64
-  CHANNEL_MULTS: [1, 2, 4, 8, 8]
-  NUM_RES_BLOCKS: 2
-  ATTN_RES: [32, 16]     # 在这些分辨率启用自注意力
-  TIME_POS_DIM: 128
-  TIME_DIM: 256
-  DROPOUT: 0.0
-
-LOG:
-  LOG_INTERVAL: 100
-  VAL_INTERVAL: 2000
-  SAVE_INTERVAL: 2000
-  MAX_CKPTS: 5
-  SAVE_BEST_ONLY: true
-  MONITOR: "psnr"
-  MODE: "max"
-  METRICS_JSON: "metrics.json"
-  METRICS_XLSX: "metrics.xlsx"
-
-EVAL:
-  USE_IMG2IMG_START: true   # 从 y 加同强度噪声起步（保结构）
-  NUM_VIS_BATCH: 4          # 每次验证保存前若干 batch 的可视化
+  PRINT_FREQ: 1
+  TIMESTEPS: 1000         # 新增：扩散步骤数
+  NUM_WORKERS: 4          # 新增：Dataloader 线程数
+  RECON_LAMBDA: 0.0       # 新增：是否加 L1 重建损失（0 就是只用噪声预测）
