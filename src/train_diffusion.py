@@ -146,9 +146,9 @@ def validate(model, noise_scheduler, dataloader, device,
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, required=True,
+    parser.add_argument('--config', type=str, default='./configs/train.yaml',
                         help='path to YAML config file')
-    parser.add_argument('--model_name', type=str, default='model1',
+    parser.add_argument('--model_name', type=str, default='BaseModel',
                         help='model name used as subfolder under SAVE_DIR')
     args = parser.parse_args()
 
