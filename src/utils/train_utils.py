@@ -1,92 +1,87 @@
 """
-    @Project: UnderwaterImageEnhanced-Diffusion
-    @Author: ChatGPT
+    @Project: DiffusionProject
+    @Author: Panke
     @FileName: train_utils.py
-    @Time: 2025/11/09
+    @Time: 2025/12/4 23:35
     @Email: None
 """
-from __future__ import annotations
-import os, random
-import numpy as np
+import argparse
+from pathlib import Path
+from typing import Any, Dict
+
 import torch
-import torch.nn.functional as F
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torchvision.utils import make_grid, save_image
+import yaml
+
+from ..dataset.datasets import UnderwaterImageDataset
 
 
-def seed_everything(seed: int = 42):
-    random.seed(seed)
-    np.random.seed(seed)
+def load_config(path: str) -> Dict[str, Any]:
+    """读取 YAML 配置文件。"""
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def set_seed(seed: int) -> None:
+    """设置随机种子，确保实验可复现。"""
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.benchmark = True
-    os.environ["PYTHONHASHSEED"] = str(seed)
-
-def tensor_to_01(x: torch.Tensor) -> torch.Tensor:
-    """
-    把 [-1, 1] 映射到 [0, 1]
-    """
-    x = (x + 1.0) / 2.0
-    return torch.clamp(x, 0.0, 1.0)
 
 
-def psnr_batch(pred: torch.Tensor, target: torch.Tensor) -> float:
-    """
-    pred, target: [B, C, H, W] in [-1,1]
-    返回一个 batch 的平均 PSNR (dB)
-    """
-    pred_01 = tensor_to_01(pred)
-    target_01 = tensor_to_01(target)
-    mse = F.mse_loss(pred_01, target_01, reduction='none')
-    mse = mse.view(mse.size(0), -1).mean(dim=1)  # [B]
-    mse = torch.clamp(mse, min=1e-10)
-    psnr = 10.0 * torch.log10(1.0 / mse)
-    return psnr.mean().item()
+def prepare_dataloader(
+    cfg: Dict[str, Any], split: str, shuffle: bool = True
+) -> DataLoader:
+    """根据 split 构建训练或验证 DataLoader。"""
+
+    split_cfg = cfg["data"].get(split, {})
+    if not split_cfg:
+        raise ValueError(f"配置中缺少 {split} 数据集信息。")
+
+    dataset = UnderwaterImageDataset(
+        gt_dir=split_cfg["gt_dir"],
+        input_dir=split_cfg.get("input_dir"),
+        image_size=cfg["data"]["image_size"],
+        channels=cfg["data"]["channels"],
+        augmentation_cfg=cfg["data"].get("augmentation", {}) if split == "train" else {},
+    )
+    batch_size = (
+        cfg["data"]["batch_size"] if split == "train" else cfg["data"].get("val_batch_size", cfg["data"]["batch_size"])
+    )
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=cfg["data"].get("num_workers", 4),
+        pin_memory=True,
+    )
 
 
-def _gaussian_kernel(window_size: int, sigma: float,
-                     channels: int, device: torch.device) -> torch.Tensor:
-    """
-    生成 2D 高斯卷积核，用于 SSIM 计算
-    """
-    coords = torch.arange(window_size, dtype=torch.float32, device=device) - window_size // 2
-    g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
-    g = g / g.sum()
-    kernel_2d = g.view(1, 1, -1) * g.view(1, -1, 1)  # [1,1,window,window]
-    kernel_2d = kernel_2d.unsqueeze(0)                # [1,1,window,window]
-    kernel_2d = kernel_2d.repeat(channels, 1, 1, 1)   # [C,1,window,window]
-    return kernel_2d
+def save_samples(images: torch.Tensor, save_dir: Path, epoch: int, save_grid: bool) -> None:
+    """保存采样结果；同时保存单张和网格。"""
+    save_dir.mkdir(parents=True, exist_ok=True)
+    # 反归一化到 [0,1]
+    images = (images.clamp(-1, 1) + 1) * 0.5
+
+    for idx, img in enumerate(images):
+        save_image(img, save_dir / f"epoch{epoch:04d}_sample{idx}.png")
+
+    if save_grid:
+        grid = make_grid(images, nrow=max(1, int(len(images) ** 0.5)))
+        save_image(grid, save_dir / f"epoch{epoch:04d}_grid.png")
 
 
-def ssim_batch(pred: torch.Tensor, target: torch.Tensor,
-               window_size: int = 11, sigma: float = 1.5) -> float:
-    """
-    pred, target: [B, C, H, W] in [-1,1]
-    返回一个 batch 的平均 SSIM
-    """
-    pred_01 = tensor_to_01(pred)
-    target_01 = tensor_to_01(target)
+def save_checkpoint(model: nn.Module, optimizer: optim.Optimizer, epoch: int, save_dir: Path) -> None:
+    save_dir.mkdir(parents=True, exist_ok=True)
+    state = {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "epoch": epoch,
+    }
+    torch.save(state, save_dir / f"epoch{epoch:04d}.pt")
 
-    B, C, H, W = pred_01.shape
-    device = pred_01.device
-    window = _gaussian_kernel(window_size, sigma, C, device=device)
-    padding = window_size // 2
 
-    mu1 = F.conv2d(pred_01, window, padding=padding, groups=C)
-    mu2 = F.conv2d(target_01, window, padding=padding, groups=C)
 
-    mu1_sq = mu1 * mu1
-    mu2_sq = mu2 * mu2
-    mu1_mu2 = mu1 * mu2
-
-    sigma1_sq = F.conv2d(pred_01 * pred_01, window, padding=padding, groups=C) - mu1_sq
-    sigma2_sq = F.conv2d(target_01 * target_01, window, padding=padding, groups=C) - mu2_sq
-    sigma12 = F.conv2d(pred_01 * target_01, window, padding=padding, groups=C) - mu1_mu2
-
-    L = 1.0
-    C1 = (0.01 * L) ** 2
-    C2 = (0.03 * L) ** 2
-
-    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / \
-               ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
-
-    return ssim_map.mean().item()
 
