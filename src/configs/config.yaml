@@ -13,14 +13,14 @@ experiment:
 # 如果不需要验证集，可将 val 节点留空或删除。
 data:
   train:
-    input_dir: "/data/Train/input"
-    gt_dir: "/data/Train/GT"
+    input_dir: "/public/home/hnust15874739861/pro/UnderwaterImageEnhanced/dataset/LSUI19/Train/input"
+    gt_dir: "/public/home/hnust15874739861/pro/UnderwaterImageEnhanced/dataset/LSUI19/Train/GT"
   val:
-    input_dir: "/data/Val/input"
-    gt_dir: "/data/Val/GT"
+    input_dir: "/public/home/hnust15874739861/pro/UnderwaterImageEnhanced/dataset/LSUI19/Val/input"
+    gt_dir: "/public/home/hnust15874739861/pro/UnderwaterImageEnhanced/dataset/LSUI19/Val/GT"
   image_size: 256          # 图像训练尺寸，训练时会做中心裁剪并缩放
   channels: 3               # 图像通道数，RGB 为 3
-  batch_size: 4
+  batch_size: 16
   val_batch_size: 4        # 验证批次大小，可与训练不同
   num_workers: 4
   augmentation:
@@ -37,11 +37,11 @@ diffusion:
 
 # 优化器与训练循环
 train:
-  num_epochs: 100
-  learning_rate: 1e-4
+  num_epochs: 2
+  learning_rate: 0.0001
   weight_decay: 0.0
   grad_clip: 1.0
-  ema_decay: 0.999       # 如果需要指数滑动平均，可设置 <1.0；设为 1 可关闭
+  ema_decay: 1      # 如果需要指数滑动平均，可设置 <1.0；设为 1 可关闭
   log_interval: 50
   sample_interval: 1      # 多少个 epoch 进行一次采样保存
   mixed_precision: true

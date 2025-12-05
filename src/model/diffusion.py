@@ -33,13 +33,13 @@ class GaussianDiffusion(nn.Module):
     """封装前向/反向扩散计算逻辑。"""
 
     def __init__(
-            self,
-            model: nn.Module,
-            image_size: int,
-            channels: int,
-            timesteps: int,
-            beta_start: float,
-            beta_end: float,
+        self,
+        model: nn.Module,
+        image_size: int,
+        channels: int,
+        timesteps: int,
+        beta_start: float,
+        beta_end: float,
     ) -> None:
         super().__init__()
         self.model = model
@@ -64,9 +64,20 @@ class GaussianDiffusion(nn.Module):
     def q_sample(self, x_start: torch.Tensor, t: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
         """根据 q(x_t | x_0) 对干净图像加入噪声。"""
         return (
-                extract(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
-                + extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
+            extract(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
+            + extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
+
+    def predict_start_from_noise(
+        self, x_t: torch.Tensor, t: torch.Tensor, noise: torch.Tensor
+    ) -> torch.Tensor:
+        """根据预测噪声反推 x0。"""
+
+        sqrt_recip_alphas_cumprod = torch.sqrt(1.0 / extract(self.alphas_cumprod, t, x_t.shape))
+        sqrt_recipm1_alphas_cumprod = torch.sqrt(
+            1.0 / extract(self.alphas_cumprod, t, x_t.shape) - 1
+        )
+        return sqrt_recip_alphas_cumprod * x_t - sqrt_recipm1_alphas_cumprod * noise
 
     def p_losses(self, x_start: torch.Tensor, t: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
         """预测噪声的 MSE 损失。"""
@@ -124,5 +135,6 @@ class GaussianDiffusion(nn.Module):
 def extract(a: torch.Tensor, t: torch.Tensor, x_shape: torch.Size) -> torch.Tensor:
     """从预存向量中按时间步提取对应系数，并 reshape 以便广播。"""
     batch_size = t.shape[0]
-    out = a.gather(-1, t.cpu()).to(t.device)
+    # 保持索引与被提取张量在同一设备，避免 CPU/GPU 混用导致的错误
+    out = a.gather(-1, t.to(a.device))
     return out.reshape(batch_size, *((1,) * (len(x_shape) - 1)))
