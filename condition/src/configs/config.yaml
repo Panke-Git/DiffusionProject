@@ -37,7 +37,7 @@ diffusion:
 
 # 优化器与训练循环
 train:
-  num_epochs: 200
+  num_epochs: 400
   learning_rate: 0.0001
   weight_decay: 0.0
   grad_clip: 1.0

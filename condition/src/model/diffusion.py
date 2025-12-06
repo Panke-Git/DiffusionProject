@@ -33,14 +33,14 @@ class GaussianDiffusion(nn.Module):
     """封装前向/反向扩散计算逻辑。"""
 
     def __init__(
-        self,
-        model: nn.Module,
-        image_size: int,
-        channels: int,
-        timesteps: int,
-        beta_start: float,
-        beta_end: float,
-        recon_weight: float = 0.0,
+            self,
+            model: nn.Module,
+            image_size: int,
+            channels: int,
+            timesteps: int,
+            beta_start: float,
+            beta_end: float,
+            recon_weight: float = 0.0,
     ) -> None:
         super().__init__()
         self.model = model
@@ -68,12 +68,12 @@ class GaussianDiffusion(nn.Module):
     def q_sample(self, x_start: torch.Tensor, t: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
         """根据 q(x_t | x_0) 对干净图像加入噪声。"""
         return (
-            extract(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
-            + extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
+                extract(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
+                + extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
 
     def predict_start_from_noise(
-        self, x_t: torch.Tensor, t: torch.Tensor, noise: torch.Tensor
+            self, x_t: torch.Tensor, t: torch.Tensor, noise: torch.Tensor
     ) -> torch.Tensor:
         """根据预测噪声反推 x0。"""
 
@@ -84,24 +84,42 @@ class GaussianDiffusion(nn.Module):
         return sqrt_recip_alphas_cumprod * x_t - sqrt_recipm1_alphas_cumprod * noise
 
     def p_losses(
-        self,
-        x_start: torch.Tensor,
-        t: torch.Tensor,
-        noise: torch.Tensor,
+            self,
+            x_start: torch.Tensor,
+            t: torch.Tensor,
+            noise: torch.Tensor,
+            cond: torch.Tensor,
     ) -> torch.Tensor:
-        """预测噪声的 MSE 损失 + 可选的 x0 重建损失。"""
-        # 前向加噪
+        """条件扩散的损失：预测噪声 + 可选重建损失。
+
+        x_start: GT 图像（干净目标）
+        cond   : 条件图像（原始水下图），尺寸与 x_start 一致或可插值。
+        """
+        if cond is None:
+            raise ValueError("当前为条件扩散 DDPM，p_losses 必须传入 cond 条件图像。")
+
+        # 前向加噪：只对 GT 加噪
         x_noisy = self.q_sample(x_start, t, noise)
-        # 模型预测噪声 eps_theta
-        predicted_noise = self.model(x_noisy, t)
+
+        # 条件图像尺寸对齐
+        if cond.shape[2:] != x_noisy.shape[2:]:
+            cond = F.interpolate(
+                cond,
+                size=x_noisy.shape[2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        # 模型输入为 [x_t, cond] 拼接
+        model_in = torch.cat([x_noisy, cond], dim=1)
+        predicted_noise = self.model(model_in, t)
 
         # 1) 噪声 MSE（标准 DDPM 损失）
         noise_loss = F.mse_loss(predicted_noise, noise)
 
-        # 2) 可选：从 x_t 和 eps_theta 反推 x0，并对比原图
+        # 2) 可选：从 x_t 和 eps_theta 反推 x0，对比原 GT 图像
         if self.recon_weight > 0.0:
             x0_pred = self.predict_start_from_noise(x_noisy, t, predicted_noise)
-            # 这里用 L1，比 L2 更稳一点，也更贴近视觉指标
             recon_loss = F.l1_loss(x0_pred, x_start)
             return noise_loss + self.recon_weight * recon_loss
         else:
@@ -151,6 +169,82 @@ class GaussianDiffusion(nn.Module):
             else:
                 # DDIM 无随机项，直接使用上一时刻均值
                 x = model_mean
+        return x
+
+    @torch.no_grad()
+    def enhance(
+            self,
+            cond: torch.Tensor,
+            use_ddim: bool = False,
+            num_steps: int = 50,
+    ) -> torch.Tensor:
+        """条件采样：给定 cond（原始水下图），生成增强后的图像。
+
+        cond: (B, C, H, W)，值域 [-1, 1]，与训练时的 input 一致。
+        """
+        device = cond.device
+        batch_size, _, _, _ = cond.shape
+
+        # 条件图像尺寸对齐到训练分辨率
+        if cond.shape[2:] != (self.image_size, self.image_size):
+            cond = F.interpolate(
+                cond,
+                size=(self.image_size, self.image_size),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        # 从纯噪声开始逆扩散
+        x = torch.randn(
+            batch_size,
+            self.channels,
+            self.image_size,
+            self.image_size,
+            device=device,
+        )
+
+        if use_ddim and num_steps > 0:
+            # DDIM 加速采样
+            step_ratio = max(self.timesteps // num_steps, 1)
+            for i in reversed(range(0, self.timesteps, step_ratio)):
+                t = torch.full((batch_size,), i, device=device, dtype=torch.long)
+                betas_t = extract(self.betas, t, x.shape)
+                sqrt_one_minus_alphas_cumprod_t = extract(
+                    self.sqrt_one_minus_alphas_cumprod, t, x.shape
+                )
+                sqrt_recip_alphas_t = torch.sqrt(1.0 / (1.0 - betas_t))
+
+                model_in = torch.cat([x, cond], dim=1)
+                pred_noise = self.model(model_in, t)
+                model_mean = sqrt_recip_alphas_t * (
+                        x - betas_t / sqrt_one_minus_alphas_cumprod_t * pred_noise
+                )
+
+                # DDIM 这里用确定性更新，不加随机噪声
+                x = model_mean
+        else:
+            # 标准 DDPM 采样
+            for i in reversed(range(0, self.timesteps)):
+                t = torch.full((batch_size,), i, device=device, dtype=torch.long)
+                betas_t = extract(self.betas, t, x.shape)
+                sqrt_one_minus_alphas_cumprod_t = extract(
+                    self.sqrt_one_minus_alphas_cumprod, t, x.shape
+                )
+                sqrt_recip_alphas_t = torch.sqrt(1.0 / (1.0 - betas_t))
+
+                model_in = torch.cat([x, cond], dim=1)
+                pred_noise = self.model(model_in, t)
+                model_mean = sqrt_recip_alphas_t * (
+                        x - betas_t / sqrt_one_minus_alphas_cumprod_t * pred_noise
+                )
+
+                if i == 0:
+                    x = model_mean
+                else:
+                    posterior_variance_t = extract(self.posterior_variance, t, x.shape)
+                    noise = torch.randn_like(x)
+                    x = model_mean + torch.sqrt(posterior_variance_t) * noise
+
         return x
 
 

@@ -32,19 +32,22 @@ from .utils.train_utils import prepare_dataloader, set_seed, create_output_dirs,
 
 IMG_SIZE = 256
 
-
 def build_model(cfg: Dict[str, Any]) -> modellib.Unet:
+    # 条件扩散：输入为 [x_t, cond]，通道数翻倍
+    in_channels = cfg["data"]["channels"] * 2
+    out_channels = cfg["data"]["channels"]
     return modellib.Unet(
-        in_channels=3,
+        in_channels=in_channels,
         base_channels=64,
         channel_mults=[1, 2, 4, 8],
         num_res_blocks=2,
         dropout=0.1,
+        out_channels=out_channels,
     )
 
 
 def train(cfg: Dict[str, Any]) -> None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
     set_seed(cfg["experiment"].get("seed", 42))
 
     # 日志/输出目录：根目录/模型名/时间戳
@@ -115,12 +118,23 @@ def train(cfg: Dict[str, Any]) -> None:
         train_samples = 0
         for batch in train_loader:
             optimizer.zero_grad()
-            images = batch["image"].to(device)
-            noise = torch.randn_like(images)
-            t = torch.randint(0, cfg["diffusion"]["num_steps"], (images.shape[0],), device=device).long()
+
+            gt = batch["image"].to(device)  # GT 图像
+            cond = batch.get("input")
+            if cond is None:
+                raise RuntimeError(
+                    "当前为条件扩散训练，但训练集 batch 中没有 'input'。"
+                    "请在 config.data.train.input_dir 中配置原始水下图像目录。"
+                )
+            cond = cond.to(device)
+
+            noise = torch.randn_like(gt)
+            t = torch.randint(
+                0, cfg["diffusion"]["num_steps"], (gt.shape[0],), device=device
+            ).long()
 
             with torch.amp.autocast("cuda", enabled=scaler.is_enabled()):
-                loss = diffusion.p_losses(images, t, noise)
+                loss = diffusion.p_losses(gt, t, noise, cond=cond)
 
             scaler.scale(loss).backward()
             if cfg["train"].get("grad_clip", 0.0) > 0:
@@ -134,8 +148,9 @@ def train(cfg: Dict[str, Any]) -> None:
                     for p_ema, p in zip(ema_model.parameters(), model.parameters()):
                         p_ema.data.mul_(ema_decay).add_(p.data, alpha=1 - ema_decay)
 
-            train_loss_sum += loss.item() * images.size(0)
-            train_samples += images.size(0)
+            train_loss_sum += loss.item() * gt.size(0)
+            train_samples += gt.size(0)
+
             global_step += 1
             if global_step % log_interval == 0:
                 print(f"Epoch {epoch} Step {global_step}: loss={loss.item():.6f}")
@@ -156,25 +171,43 @@ def train(cfg: Dict[str, Any]) -> None:
             total_samples = 0
             with torch.no_grad():
                 for batch in val_loader:
-                    images = batch["image"].to(device)
-                    noise = torch.randn_like(images)
-                    # t = torch.randint(
-                    #     0, cfg["diffusion"]["num_steps"], (images.shape[0],), device=device
-                    # ).long()
-                    t = torch.full((images.shape[0],), 100, device=device, dtype=torch.long)
+                    gt = batch["image"].to(device)
+                    cond = batch.get("input")
+                    if cond is None:
+                        raise RuntimeError(
+                            "验证集也需要提供 'input' 条件图像，请在 config.data.val.input_dir 中配置。"
+                        )
+                    cond = cond.to(device)
 
-                    x_noisy = diffusion.q_sample(images, t, noise)
-                    predicted_noise = model_to_eval(x_noisy, t)
+                    noise = torch.randn_like(gt)
+                    t = torch.randint(
+                        0, cfg["diffusion"]["num_steps"], (gt.shape[0],), device=device
+                    ).long()
+                    x_noisy = diffusion.q_sample(gt, t, noise)
+
+                    # 条件尺寸对齐
+                    if cond.shape[2:] != x_noisy.shape[2:]:
+                        cond_resized = F.interpolate(
+                            cond,
+                            size=x_noisy.shape[2:],
+                            mode="bilinear",
+                            align_corners=False,
+                        )
+                    else:
+                        cond_resized = cond
+
+                    model_in = torch.cat([x_noisy, cond_resized], dim=1)
+                    predicted_noise = model_to_eval(model_in, t)
                     loss_val = F.mse_loss(predicted_noise, noise)
                     recon = diffusion.predict_start_from_noise(x_noisy, t, predicted_noise)
 
-                    # 反归一化到 [0,1] 计算图像质量指标
-                    images_01 = tensor_to_01(images)
+                    gt_01 = tensor_to_01(gt)
                     recon_01 = tensor_to_01(recon)
-                    total_ssim += ssim(recon_01, images_01).sum().item()
-                    total_psnr += psnr(recon_01, images_01).sum().item()
-                    total_loss += loss_val.item() * images.size(0)
-                    total_samples += images.size(0)
+                    total_ssim += ssim(recon_01, gt_01).sum().item()
+                    total_psnr += psnr(recon_01, gt_01).sum().item()
+                    total_loss += loss_val.item() * gt.size(0)
+                    total_samples += gt.size(0)
+
             val_loss = total_loss / max(total_samples, 1)
             val_ssim = total_ssim / max(total_samples, 1)
             val_psnr = total_psnr / max(total_samples, 1)
@@ -237,22 +270,37 @@ def train(cfg: Dict[str, Any]) -> None:
             maybe_save_best("ssim", val_ssim)
             maybe_save_best("psnr", val_psnr)
 
-        # 采样与保存
+        # 采样与保存（条件扩散：使用输入图像作为条件做增强）
         if epoch % cfg["train"].get("sample_interval", 1) == 0:
             diffusion.eval()
             sampler = ema_model if ema_model is not None else model
             diffusion.model = sampler  # 暂时替换，便于采样
+
             with torch.no_grad():
-                if cfg["sampling"].get("ddim_steps", 0) > 0:
-                    samples = diffusion.ddim_sample(
-                        batch_size=cfg["sampling"].get("num_samples", 4),
-                        device=device,
+                # 从验证集（若存在）或训练集取一批输入图像
+                source_loader = val_loader if val_loader is not None else train_loader
+                batch = next(iter(source_loader))
+
+                cond = batch.get("input")
+                if cond is None:
+                    raise RuntimeError(
+                        "采样阶段需要 batch['input'] 作为条件，请检查数据集与配置。"
+                    )
+                cond = cond.to(device)
+
+                use_ddim = cfg["sampling"].get("ddim_steps", 0) > 0
+                if use_ddim:
+                    samples = diffusion.enhance(
+                        cond,
+                        use_ddim=True,
                         num_steps=cfg["sampling"]["ddim_steps"],
                     )
                 else:
-                    samples = diffusion.sample(batch_size=cfg["sampling"].get("num_samples", 4), device=device)
+                    samples = diffusion.enhance(cond, use_ddim=False)
+
             save_samples(samples, samples_dir, epoch, cfg["sampling"].get("save_grid", True))
             diffusion.model = model  # 采样后换回训练模型
+
 
     print("训练完成！模型与采样结果已保存。")
 
@@ -266,7 +314,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config",
         type=str,
-        default="/public/home/hnust15874739861/pro/DiffusionProject/src/configs/config.yaml",
+        default="/public/home/hnust15874739861/pro/DiffusionProject/condition/src/configs/config.yaml",
         help="路径指向 YAML 配置文件",
     )
     args = parser.parse_args()
