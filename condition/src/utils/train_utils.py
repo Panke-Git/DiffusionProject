@@ -152,6 +152,68 @@ def save_comparison_grid(
 
     diffusion.model = original_model
 
+def evaluate_sampling(
+    model: nn.Module,
+    diffusion,
+    dataloader,
+    device: torch.device,
+    use_ddim: bool = False,
+    num_steps: int | None = None,
+    max_batches: int | None = None,
+) -> Dict[str, float]:
+    """
+    使用完整的采样链（diffusion.enhance(cond)）在 dataloader 上做一次评估，
+    返回基于“最终输出”的 PSNR / SSIM 平均值。
+
+    - model:        要评估的网络（通常是 EMA 模型或最终模型）
+    - diffusion:    GaussianDiffusion 实例（里面要已经绑定好 betas 等参数）
+    - dataloader:   验证或测试集的 DataLoader，batch 应包含 "image" 和 "input"
+    - device:       当前设备
+    - use_ddim:     是否使用 DDIM 采样（True/False）
+    - num_steps:    DDIM 步数（None 或 0 时，走标准 DDPM 全步数）
+    - max_batches:  若不为 None，则只评估前 max_batches 个 batch（调试用）
+    """
+    model.eval()
+    original_model = diffusion.model
+    diffusion.model = model
+
+    total_ssim = 0.0
+    total_psnr = 0.0
+    total_samples = 0
+
+    with torch.no_grad():
+        for bi, batch in enumerate(dataloader):
+            gt = batch["image"].to(device)   # GT
+            cond = batch["input"].to(device) # 条件：原始水下图
+
+            # --- 运行完整采样链：cond -> enhance(cond) ---
+            if use_ddim and (num_steps is not None) and (num_steps > 0):
+                pred = diffusion.enhance(cond, use_ddim=True, num_steps=num_steps)
+            else:
+                pred = diffusion.enhance(cond, use_ddim=False)
+
+            # --- 反归一化到 [0,1]，计算指标 ---
+            gt_01 = tensor_to_01(gt)
+            pred_01 = tensor_to_01(pred)
+
+            batch_ssim = ssim(pred_01, gt_01)   # [B]
+            batch_psnr = psnr(pred_01, gt_01)   # [B]
+
+            total_ssim += batch_ssim.sum().item()
+            total_psnr += batch_psnr.sum().item()
+            total_samples += gt.size(0)
+
+            if max_batches is not None and (bi + 1) >= max_batches:
+                break
+
+    diffusion.model = original_model
+
+    mean_ssim = total_ssim / max(1, total_samples)
+    mean_psnr = total_psnr / max(1, total_samples)
+    return {"eval_ssim": mean_ssim, "eval_psnr": mean_psnr}
+
+
+
 
 def plot_loss_curve(metrics: List[Dict[str, float]], save_path: Path) -> None:
     """绘制训练/验证损失曲线并保存。"""

@@ -28,7 +28,7 @@ import yaml
 from . import model as modellib
 from .model.diffusion import GaussianDiffusion
 from .utils.train_utils import prepare_dataloader, set_seed, create_output_dirs, load_config, save_comparison_grid, \
-    plot_loss_curve, tensor_to_01, save_samples, ssim, psnr
+    plot_loss_curve, tensor_to_01, save_samples, ssim, psnr, evaluate_sampling
 
 IMG_SIZE = 256
 
@@ -81,6 +81,7 @@ def train(cfg: Dict[str, Any]) -> None:
     print("Training...")
     print("output_dir: {}".format(output_dir))
     print("num_epochs: {}".format(num_epochs))
+    print("database: {}".format(cfg["data"]["train"]["input_dir"].split("/")[-3]))
 
     optimizer = optim.AdamW(
         diffusion.parameters(),
@@ -159,6 +160,8 @@ def train(cfg: Dict[str, Any]) -> None:
         val_loss = None
         val_ssim = None
         val_psnr = None
+        eval_ssim = None
+        eval_psnr = None
         model_to_eval = None
         if val_loader is not None:
             model_to_eval = ema_model if ema_model is not None else model
@@ -215,6 +218,29 @@ def train(cfg: Dict[str, Any]) -> None:
             print(f"Epoch {epoch}: validation loss={val_loss:.6f}")
             print(f"Epoch {epoch}: validation SSIM={val_ssim:.4f}, PSNR={val_psnr:.2f}dB")
 
+            # 配置里可以加一个 evaluation.eval_interval 控制频率；没有就每个 epoch 都 eval
+            eval_cfg = cfg.get("evaluation", {})
+            eval_interval = int(eval_cfg.get("eval_interval", 1))
+            max_eval_batches = eval_cfg.get("max_batches", None)
+
+            if (epoch % eval_interval) == 0:
+                print("  -> 运行完整采样 eval_sampling（enhance(cond)）...")
+                sampling_metrics = evaluate_sampling(
+                    model=model_to_eval,
+                    diffusion=diffusion,
+                    dataloader=val_loader,
+                    device=device,
+                    use_ddim=cfg["sampling"].get("ddim_steps", 0) > 0,
+                    num_steps=cfg["sampling"].get("ddim_steps", 0),
+                    max_batches=max_eval_batches,
+                )
+                eval_ssim = sampling_metrics["eval_ssim"]
+                eval_psnr = sampling_metrics["eval_psnr"]
+                print(
+                    f"  [EvalSampling] SSIM={eval_ssim:.4f}, "
+                    f"PSNR={eval_psnr:.2f}dB"
+                )
+
         # 记录指标到 JSON
         epoch_record = {
             "epoch": epoch,
@@ -228,6 +254,15 @@ def train(cfg: Dict[str, Any]) -> None:
                     "val_psnr": val_psnr,
                 }
             )
+            # 如果本 epoch 做了完整采样 eval，则一起记录
+            if eval_ssim is not None and eval_psnr is not None:
+                epoch_record.update(
+                    {
+                        "eval_ssim": eval_ssim,
+                        "eval_psnr": eval_psnr,
+                    }
+                )
+
         metrics_history.append(epoch_record)
         with open(metrics_path, "w", encoding="utf-8") as f:
             json.dump(metrics_history, f, ensure_ascii=False, indent=2)
