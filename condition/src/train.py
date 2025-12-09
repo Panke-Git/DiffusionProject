@@ -29,6 +29,8 @@ from . import model as modellib
 from .model.diffusion import GaussianDiffusion
 from .utils.train_utils import prepare_dataloader, set_seed, create_output_dirs, load_config, save_comparison_grid, \
     plot_loss_curve, tensor_to_01, save_samples, ssim, psnr, evaluate_sampling
+from pathlib import Path
+
 
 IMG_SIZE = 256
 
@@ -47,7 +49,7 @@ def build_model(cfg: Dict[str, Any]) -> modellib.Unet:
 
 
 def train(cfg: Dict[str, Any]) -> None:
-    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     set_seed(cfg["experiment"].get("seed", 42))
 
     # 日志/输出目录：根目录/模型名/时间戳
@@ -223,23 +225,23 @@ def train(cfg: Dict[str, Any]) -> None:
             eval_interval = int(eval_cfg.get("eval_interval", 1))
             max_eval_batches = eval_cfg.get("max_batches", None)
 
-            if (epoch % eval_interval) == 0:
-                print("  -> 运行完整采样 eval_sampling（enhance(cond)）...")
-                sampling_metrics = evaluate_sampling(
-                    model=model_to_eval,
-                    diffusion=diffusion,
-                    dataloader=val_loader,
-                    device=device,
-                    use_ddim=cfg["sampling"].get("ddim_steps", 0) > 0,
-                    num_steps=cfg["sampling"].get("ddim_steps", 0),
-                    max_batches=max_eval_batches,
-                )
-                eval_ssim = sampling_metrics["eval_ssim"]
-                eval_psnr = sampling_metrics["eval_psnr"]
-                print(
-                    f"  [EvalSampling] SSIM={eval_ssim:.4f}, "
-                    f"PSNR={eval_psnr:.2f}dB"
-                )
+            # if (epoch % eval_interval) == 0:
+            #     print("  -> 运行完整采样 eval_sampling（enhance(cond)）...")
+            #     sampling_metrics = evaluate_sampling(
+            #         model=model_to_eval,
+            #         diffusion=diffusion,
+            #         dataloader=val_loader,
+            #         device=device,
+            #         use_ddim=cfg["sampling"].get("ddim_steps", 0) > 0,
+            #         num_steps=cfg["sampling"].get("ddim_steps", 0),
+            #         max_batches=max_eval_batches,
+            #     )
+            #     eval_ssim = sampling_metrics["eval_ssim"]
+            #     eval_psnr = sampling_metrics["eval_psnr"]
+            #     print(
+            #         f"  [EvalSampling] SSIM={eval_ssim:.4f}, "
+            #         f"PSNR={eval_psnr:.2f}dB"
+            #     )
 
         # 记录指标到 JSON
         epoch_record = {
@@ -255,13 +257,13 @@ def train(cfg: Dict[str, Any]) -> None:
                 }
             )
             # 如果本 epoch 做了完整采样 eval，则一起记录
-            if eval_ssim is not None and eval_psnr is not None:
-                epoch_record.update(
-                    {
-                        "eval_ssim": eval_ssim,
-                        "eval_psnr": eval_psnr,
-                    }
-                )
+            # if eval_ssim is not None and eval_psnr is not None:
+            #     epoch_record.update(
+            #         {
+            #             "eval_ssim": eval_ssim,
+            #             "eval_psnr": eval_psnr,
+            #         }
+            #     )
 
         metrics_history.append(epoch_record)
         with open(metrics_path, "w", encoding="utf-8") as f:
@@ -335,6 +337,84 @@ def train(cfg: Dict[str, Any]) -> None:
 
             save_samples(samples, samples_dir, epoch, cfg["sampling"].get("save_grid", True))
             diffusion.model = model  # 采样后换回训练模型
+
+    # =========================
+    # 训练循环结束：对 best_loss / best_ssim / best_psnr 三个 ckpt 做完整采样 eval
+    # =========================
+    if val_loader is not None:
+        print("开始对 best_loss / best_ssim / best_psnr 三个检查点做完整采样评估...")
+
+        # 用于存储最终 eval 结果
+        best_eval_results = {}
+
+        # 方便：从 config/sampling 里读采样设置
+        use_ddim = cfg["sampling"].get("ddim_steps", 0) > 0
+        num_steps = cfg["sampling"].get("ddim_steps", 0)
+        eval_cfg = cfg.get("evaluation", {})
+        max_eval_batches = eval_cfg.get("max_batches", None)  # 可选：只在部分 batch 上评估
+
+        for metric_name in ["loss", "ssim", "psnr"]:
+            record = best_records.get(metric_name)
+            ckpt_path = record.get("path") if record is not None else None
+            best_value = record.get("value") if record is not None else None
+
+            if not ckpt_path:
+                print(f"  [Eval] 跳过 {metric_name}，因为还没有对应的 best_{metric_name}.pt")
+                continue
+
+            ckpt_path = Path(ckpt_path)
+            if not ckpt_path.is_file():
+                print(f"  [Eval] 找不到检查点文件: {ckpt_path}")
+                continue
+
+            print(f"  [Eval] 加载 {metric_name} 最优检查点: {ckpt_path}")
+            ckpt = torch.load(ckpt_path, map_location=device)
+
+            # 优先使用保存的 EMA 模型；如果没有，就用普通模型权重
+            if "ema_model" in ckpt:
+                model.load_state_dict(ckpt["ema_model"])
+                eval_model_type = "ema_model"
+            else:
+                model.load_state_dict(ckpt["model"])
+                eval_model_type = "model"
+
+            # 使用完整采样链做评估
+            sampling_metrics = evaluate_sampling(
+                model=model,
+                diffusion=diffusion,
+                dataloader=val_loader,
+                device=device,
+                use_ddim=use_ddim,
+                num_steps=num_steps,
+                max_batches=max_eval_batches,
+            )
+
+            eval_ssim = sampling_metrics["eval_ssim"]
+            eval_psnr = sampling_metrics["eval_psnr"]
+
+            print(
+                f"  [Eval-{metric_name}] ({eval_model_type}) "
+                f"best_value={best_value:.4f}, "
+                f"EvalSampling SSIM={eval_ssim:.4f}, PSNR={eval_psnr:.2f}dB"
+            )
+
+            best_eval_results[metric_name] = {
+                "metric": metric_name,
+                "best_value": float(best_value),
+                "ckpt_path": str(ckpt_path),
+                "epoch": int(ckpt.get("epoch", -1)),
+                "model_type": eval_model_type,
+                "eval_ssim": float(eval_ssim),
+                "eval_psnr": float(eval_psnr),
+            }
+
+        # 把三组结果写到一个单独的 JSON 文件里
+        eval_results_path = output_dir / "eval_best_checkpoints.json"
+        with open(eval_results_path, "w", encoding="utf-8") as f:
+            json.dump(best_eval_results, f, ensure_ascii=False, indent=2)
+
+        print(f"完整采样评估结果已保存到: {eval_results_path}")
+    # =========================
 
 
     print("训练完成！模型与采样结果已保存。")
