@@ -6,6 +6,7 @@
     @OS：
     @Email: None
 """
+from typing import Dict, Any
 
 # !/usr/bin/env python
 # -*- coding: utf-8 -*-
@@ -39,8 +40,6 @@ IMG_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
 
 def build_model_and_diffusion(device):
     """
-    TODO: 这里完全照抄你训练脚本里创建 model 和 diffusion 的那几行。
-
     例如如果你训练代码里是这样的（示意）：
         from myproj.script_util import create_model_and_diffusion, create_config
         cfg = create_config(...)
@@ -49,15 +48,23 @@ def build_model_and_diffusion(device):
 
     那就把那几行搬过来，最后 return model, diffusion
     """
-    raise modellib.Unet(
-        in_channels=3,
-        base_channels=64,
-        channel_mults=[1, 2, 4, 8],
-        num_res_blocks=2,
-        dropout=0.1,
-        out_channels=3,
-    )
 
+    def build_model(cfg: Dict[str, Any]) -> modellib.Unet:
+        # 条件扩散：输入为 [x_t, cond]，通道数翻倍
+        in_channels = cfg["data"]["channels"] * 2
+        out_channels = cfg["data"]["channels"]
+        return modellib.Unet(
+            in_channels=in_channels,
+            base_channels=64,
+            channel_mults=[1, 2, 4, 8],
+            num_res_blocks=2,
+            dropout=0.1,
+            out_channels=out_channels,
+        )
+
+    model, diffusion = build_model(cfg).to(device)
+
+    raise model, diffusion
 
 def load_checkpoint_into_model(model, ckpt_path, device):
     """
