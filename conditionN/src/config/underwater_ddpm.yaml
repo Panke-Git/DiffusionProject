@@ -31,7 +31,7 @@ DIFFUSION:
   clip_x_start: true
 
 TRAIN:
-  epochs: 200
+  epochs: 500
   lr: 0.0002
   weight_decay: 0.0
   grad_clip: 1.0
@@ -47,3 +47,6 @@ EVAL:
   sample_steps: 1000        # 先用完整步数采样
   sample_batch_size: 4
   save_samples_dir: "samples"
+VAL:
+  t_start: 200
+  max_batches: 1
