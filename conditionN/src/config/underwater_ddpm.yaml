@@ -50,3 +50,6 @@ EVAL:
 VAL:
   t_start: 200
   max_batches: 1
+  sample_interval: 50     # 20/50 都行；0 表示训练中不做 sampling
+  do_final_sampling: true
+  auto_preview: true

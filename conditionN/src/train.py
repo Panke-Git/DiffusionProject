@@ -17,6 +17,8 @@ from datetime import datetime
 
 import copy
 
+from .utils.generate_best_grids import auto_generate_best_grids
+
 # 保证能找到 src 目录下的包 (models, data, diffusion, utils)
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -28,6 +30,7 @@ from .utils.record_utils import *
 
 @torch.no_grad()
 def validate_denoise(cfg, model, diffusion, val_loader, device):
+
     model.eval()
     recon_lambda = float(getattr(cfg.TRAIN, "recon_lambda", 0.0) or 0.0)
 
@@ -95,64 +98,6 @@ def validate_sampling(cfg, model, diffusion, val_loader, device):
 
     return total_psnr / max(1, count), total_ssim / max(1, count)
 
-
-def validate(model, diffusion, val_loader, device):
-    model.eval()
-    total_loss = 0.0
-    total_psnr = 0.0
-    total_ssim = 0.0
-    count = 0
-
-    with torch.no_grad():
-        for batch in val_loader:
-            x0 = batch["gt"].to(device)        # 目标增强图像 [-1,1]
-            cond = batch["input"].to(device)   # 原始水下图像 [-1,1]
-            b = x0.size(0)
-
-            # 随机选择时间步
-            t = torch.randint(
-                low=0,
-                high=diffusion.timesteps,
-                size=(b,),
-                device=device,
-                dtype=torch.long,
-            )
-            noise = torch.randn_like(x0)
-
-            # 前向扩散生成 x_t
-            x_t = diffusion.q_sample(x0, t, noise=noise)
-            recon_lambda = float(getattr(cfg.TRAIN, "recon_lambda", 0.0) or 0.0)
-
-            # 模型预测噪声
-            eps_pred = model(x_t, cond, t)
-
-            loss_eps = F.mse_loss(eps_pred, noise, reduction="mean")
-
-            # 从预测噪声还原 x0_pred
-            x0_pred = diffusion.predict_start_from_noise(x_t, t, eps_pred)
-
-            if recon_lambda > 0.0:
-                loss_rec = F.l1_loss(x0_pred, x0)
-                loss = loss_eps + recon_lambda * loss_rec
-            else:
-                loss = loss_eps
-
-            # 计算指标 (内部会转换到 [0,1])
-            psnr = calculate_psnr(x0_pred, x0)
-            ssim = calculate_ssim(x0_pred, x0)
-
-            total_loss += loss.item() * b
-            total_psnr += psnr * b
-            total_ssim += ssim * b
-            count += b
-
-    avg_loss = total_loss / max(1, count)
-    avg_psnr = total_psnr / max(1, count)
-    avg_ssim = total_ssim / max(1, count)
-
-    return avg_loss, avg_psnr, avg_ssim
-
-
 def train(cfg, device):
     set_seed(getattr(cfg.TRAIN, "seed", 42))
     start_time=datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -187,6 +132,9 @@ def train(cfg, device):
     num_epochs = cfg.TRAIN.epochs
     log_interval = cfg.TRAIN.log_interval
     val_interval = cfg.TRAIN.val_interval
+    sample_interval = int(getattr(getattr(cfg, "VAL", None), "sample_interval", 0) or 0)
+    # sample_interval=0 表示训练中不做 sampling，只在最后做一次（可选）
+    do_final_sampling = bool(getattr(getattr(cfg, "VAL", None), "do_final_sampling", True))
     grad_clip = cfg.TRAIN.grad_clip
 
     print(f"[Train] Start training for {num_epochs} epochs")
@@ -197,7 +145,7 @@ def train(cfg, device):
     val_psnr = 0.0
     val_ssim = 0.0
     top_data = None
-    top_sam_ssim_data, top_sam_psnr_data, top_den_loss_data = None, None, None
+    top_ssim_data, top_psnr_data, top_loss_data = None, None, None
 
     for epoch in range(1, num_epochs + 1):
         model.train()
@@ -271,61 +219,53 @@ def train(cfg, device):
             model_for_eval = ema_model if ema_model is not None else model
 
             den_loss, den_psnr, den_ssim = validate_denoise(cfg, model_for_eval, diffusion, val_loader, device)
-            sam_psnr, sam_ssim = validate_sampling(cfg, model_for_eval, diffusion, val_loader, device)
 
-            print(f"[Epoch {epoch}] denoise: loss={den_loss:.6f}, psnr={den_psnr:.4f}, ssim={den_ssim:.4f} | "
-                  f"sample: psnr={sam_psnr:.4f}, ssim={sam_ssim:.4f}")
+            # ✅ 让 record 有意义：把 val_* 绑定为 denoise 指标（快速实验最实用）
+            val_loss, val_psnr, val_ssim = den_loss, den_psnr, den_ssim
 
-            # ✅ 保存 best：建议以 sam_ssim / sam_psnr 为准（这才对应最终 input→output）
+            # sampling：按间隔或最后一轮才跑
+            do_sample = (sample_interval > 0 and epoch % sample_interval == 0) or (
+                        do_final_sampling and epoch == num_epochs)
+
+            sam_psnr = sam_ssim = None
+            if do_sample:
+                sam_psnr, sam_ssim = validate_sampling(cfg, model_for_eval, diffusion, val_loader, device)
+
+            if sam_ssim is None:
+                print(
+                    f"[Epoch {epoch}] denoise: loss={den_loss:.6f}, psnr={den_psnr:.4f}, ssim={den_ssim:.4f} | sampling: skipped")
+            else:
+                print(f"[Epoch {epoch}] denoise: loss={den_loss:.6f}, psnr={den_psnr:.4f}, ssim={den_ssim:.4f} | "
+                      f"sample: psnr={sam_psnr:.4f}, ssim={sam_ssim:.4f}")
+
             metrics = {
                 "epoch": epoch,
                 "den_loss": den_loss, "den_psnr": den_psnr, "den_ssim": den_ssim,
                 "sam_psnr": sam_psnr, "sam_ssim": sam_ssim,
             }
 
-            # best_ssim 用 sam_ssim
-            if sam_ssim > best_ssim:
-                best_ssim = sam_ssim
-                save_checkpoint(model, optimizer, epoch, cfg, best_path, tag="ssim", metrics_dict=metrics,
-                                ema_model=ema_model)
-                top_sam_ssim_data = {
-                    'epoch': epoch,
-                    'train_loss': float(epoch_train_loss),
-                    'val_loss': float(best_loss),
-                    'den_psnr': float(den_psnr),
-                    'den_ssim': float(den_ssim),
-                    'sam_psnr': float(sam_psnr),
-                    'sam_ssim': float(sam_ssim),
-                }
-
-            if sam_psnr > best_psnr:
-                best_psnr = sam_psnr
-                save_checkpoint(model, optimizer, epoch, cfg, best_path, tag="psnr", metrics_dict=metrics,
-                                ema_model=ema_model)
-                top_sam_psnr_data = {
-                    'epoch': epoch,
-                    'train_loss': float(epoch_train_loss),
-                    'val_loss': float(best_loss),
-                    'den_psnr': float(den_psnr),
-                    'den_ssim': float(den_ssim),
-                    'sam_psnr': float(sam_psnr),
-                    'sam_ssim': float(sam_ssim),
-                }
-
-            if den_loss < best_loss:  # loss你也可以继续用 denoise loss
+            # ✅ Loss 永远用 denoise loss 保存（快且稳定）
+            if den_loss < best_loss:
                 best_loss = den_loss
                 save_checkpoint(model, optimizer, epoch, cfg, best_path, tag="loss", metrics_dict=metrics,
                                 ema_model=ema_model)
-                top_den_loss_data = {
-                    'epoch': epoch,
-                    'train_loss': float(epoch_train_loss),
-                    'val_loss': float(best_loss),
-                    'den_psnr': float(den_psnr),
-                    'den_ssim': float(den_ssim),
-                    'sam_psnr': float(sam_psnr),
-                    'sam_ssim': float(sam_ssim),
-                }
+                top_loss_data = metrics
 
+            # ✅ PSNR/SSIM：如果本轮做了 sampling，就以 sampling 为准；否则用 denoise（方便快速实验也能出 best）
+            psnr_for_best = sam_psnr if sam_psnr is not None else den_psnr
+            ssim_for_best = sam_ssim if sam_ssim is not None else den_ssim
+
+            if psnr_for_best > best_psnr:
+                best_psnr = psnr_for_best
+                save_checkpoint(model, optimizer, epoch, cfg, best_path, tag="psnr", metrics_dict=metrics,
+                                ema_model=ema_model)
+                top_psnr_data= metrics
+
+            if ssim_for_best > best_ssim:
+                best_ssim = ssim_for_best
+                save_checkpoint(model, optimizer, epoch, cfg, best_path, tag="ssim", metrics_dict=metrics,
+                                ema_model=ema_model)
+                top_ssim_data=metrics
         epoch_record = package_one_epoch(epoch=epoch,
                                          train_loss=float(epoch_train_loss),
                                          val_loss=float(val_loss),
@@ -336,20 +276,32 @@ def train(cfg, device):
         top_data = {
             'PSNR': {
                 'top_psnr': float(best_psnr),
-                'top_psnr_data': top_sam_psnr_data,
+                'top_psnr_data': top_psnr_data,
             },
             'SSIM': {
                 'top_ssim': float(best_ssim),
-                'top_ssim_data': top_sam_ssim_data
+                'top_ssim_data': top_ssim_data
             },
             'LOSS': {
                 'top_sum': float(best_loss),
-                'top_sum_data': top_den_loss_data
+                'top_sum_data': top_loss_data
             }
         }
     end_time = datetime.now().strftime('%Y%m%d_%H%M%S')
     excel_path, json_path, top_path = save_train_data(record_path, start_time, end_time, total_record,
                                                                    top_data)
+    if bool(cfg.VAL.auto_preview):
+        preview_out_dir = Path(record_path)/"prview_grids"
+        auto_generate_best_grids(
+            cfg=cfg,
+            device=device,
+            ckpt_dir=best_path,
+            out_dir=preview_out_dir,
+            t_start=int(getattr(getattr(cfg, "VAL", None), "t_start", 200)),
+            n_rows=10,
+            seed=int(getattr(getattr(cfg, "VAL", None), "preview_seed", 9861)),
+            use_ema=bool(getattr(getattr(cfg, "VAL", None), "preview_use_ema", True)),
+        )
     print("Train record saved in excel: ", excel_path)
     print("Train record saved in json: ", json_path)
     print("Train top record saved in top: ", top_path)
