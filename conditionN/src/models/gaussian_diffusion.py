@@ -188,15 +188,14 @@ class GaussianDiffusion(nn.Module):
             x_t: torch.Tensor,
             cond: torch.Tensor,
             t: torch.Tensor,
+            deterministic: bool = False,
     ) -> torch.Tensor:
         """
         从 p_theta(x_{t-1} | x_t, cond) 采样一个 x_{t-1}
         """
         b = x_t.shape[0]
         model_mean, _, model_log_var, _ = self.p_mean_variance(model, x_t, cond, t)
-
-        # t == 0 时直接返回均值
-        if (t == 0).all():
+        if deterministic or (t==0).all():
             return model_mean
 
         noise = torch.randn_like(x_t)
@@ -209,6 +208,7 @@ class GaussianDiffusion(nn.Module):
             cond: torch.Tensor,
             shape,
             device: torch.device,
+            deterministic: bool = False,
     ) -> torch.Tensor:
         """
         从纯噪声开始, 迭代生成 x_0:
@@ -220,7 +220,7 @@ class GaussianDiffusion(nn.Module):
 
         for i in reversed(range(self.timesteps)):
             t = torch.full((b,), i, device=device, dtype=torch.long)
-            img = self.p_sample(model, img, cond, t)
+            img = self.p_sample(model, img, cond, t, deterministic)
 
         return img
 
@@ -231,6 +231,7 @@ class GaussianDiffusion(nn.Module):
             cond: torch.Tensor,
             x_t: torch.Tensor,
             t_start: int,
+            deterministic: bool = False,
     ) -> torch.Tensor:
         """
         从给定的 x_{t_start} 开始往回采样到 x_0:
@@ -244,7 +245,7 @@ class GaussianDiffusion(nn.Module):
         # 依次走 t_start, t_start-1, ..., 0
         for i in reversed(range(t_start + 1)):
             t = torch.full((b,), i, device=device, dtype=torch.long)
-            img = self.p_sample(model, img, cond, t)
+            img = self.p_sample(model, img, cond, t, deterministic)
 
         return img
 
@@ -254,6 +255,7 @@ class GaussianDiffusion(nn.Module):
             model: nn.Module,
             cond: torch.Tensor,
             t_start: int,
+            deterministic: bool = False,
     ) -> torch.Tensor:
         """
         以 input 自身作为 x_0 的近似, 先加噪到 t_start, 再反向采样:
@@ -272,11 +274,11 @@ class GaussianDiffusion(nn.Module):
         x_t = self.q_sample(cond, t, noise=noise)
 
         # 再从 x_{t_start} 反向采样到 x_0
-        x0 = self.p_sample_loop_from_x(model, cond, x_t, t_start)
+        x0 = self.p_sample_loop_from_x(model, cond, x_t, t_start, deterministic)
         return x0
 
     @torch.no_grad()
-    def sample(self, model: nn.Module, cond: torch.Tensor) -> torch.Tensor:
+    def sample(self, model: nn.Module, cond: torch.Tensor, deterministic: bool = False,) -> torch.Tensor:
         """
         对一批条件图像 cond 生成增强图像:
             cond: (B, 3, H, W)  [-1,1]
@@ -285,7 +287,7 @@ class GaussianDiffusion(nn.Module):
         """
         device = cond.device
         b, c, h, w = cond.shape
-        x = self.p_sample_loop(model, cond, (b, c, h, w), device=device)
+        x = self.p_sample_loop(model, cond, (b, c, h, w), device=device, deterministic=deterministic)
         return x
 
 

@@ -171,18 +171,42 @@ def train(cfg, device):
 
             optimizer.zero_grad(set_to_none=True)
             recon_lambda = float(getattr(cfg.TRAIN, "recon_lambda", 0.0) or 0.0)
+            lowfreq_lambda = float(getattr(cfg.TRAIN, "lowfreq_lambda", 0.0) or 0.0)
+            colorstat_lambda = float(getattr(cfg.TRAIN, "colorstat_lambda", 0.0) or 0.0)
+            lowfreq_scale = float(getattr(cfg.TRAIN, "lowfreq_scale", 0.25) or 0.25)
 
             with torch.cuda.amp.autocast(enabled=use_amp):
                 eps_pred = model(x_t, cond, t)
-                loss_eps = F.mse_loss(eps_pred, noise, reduction="mean")
 
+            loss_eps = F.mse_loss(eps_pred.float(), noise.float(), reduction="mean")
             loss = loss_eps
-            if recon_lambda > 0.0:
-                x0_pred = diffusion.predict_start_from_noise(x_t.float(), t, eps_pred.float()).clamp(-1, 1)
-                x0_01 = ((x0.float() + 1) / 2).clamp(0, 1)
-                x0p_01 = ((x0_pred + 1) / 2).clamp(0, 1)
-                loss_rec = F.l1_loss(x0p_01, x0_01, reduction="mean")
-                loss = loss + recon_lambda * loss_rec
+
+            need_x0 = (recon_lambda > 0.0) or (lowfreq_lambda > 0.0) or (colorstat_lambda > 0.0)
+            if need_x0:
+                x0_pred = diffusion.predict_start_from_noise(x_t.float(), t, eps_pred.float()).clamp(-1.0, 1.0)
+
+                x0_01 = ((x0.float() + 1.0) / 2.0).clamp(0.0, 1.0)
+                x0p_01 = ((x0_pred + 1.0) / 2.0).clamp(0.0, 1.0)
+
+                if recon_lambda > 0.0:
+                    loss_rec = F.l1_loss(x0p_01, x0_01, reduction="mean")
+                    loss = loss + recon_lambda * loss_rec
+
+                if lowfreq_lambda > 0.0:
+                    x0_low = F.interpolate(x0_01, scale_factor=lowfreq_scale, mode="bilinear", align_corners=False)
+                    x0p_low = F.interpolate(x0p_01, scale_factor=lowfreq_scale, mode="bilinear", align_corners=False)
+                    loss_low = F.l1_loss(x0p_low, x0_low, reduction="mean")
+                    loss = loss + lowfreq_lambda * loss_low
+
+                if colorstat_lambda > 0.0:
+                    mu = x0_01.mean(dim=(2, 3))
+                    mup = x0p_01.mean(dim=(2, 3))
+                    var = x0_01.var(dim=(2, 3), unbiased=False)
+                    varp = x0p_01.var(dim=(2, 3), unbiased=False)
+                    std = (var + 1e-6).sqrt()
+                    stdp = (varp + 1e-6).sqrt()
+                    loss_color = F.l1_loss(mup, mu, reduction="mean") + F.l1_loss(stdp, std, reduction="mean")
+                    loss = loss + colorstat_lambda * loss_color
 
             # 反向传播
             scaler.scale(loss).backward()
@@ -299,7 +323,7 @@ def train(cfg, device):
             out_dir=preview_out_dir,
             t_start=int(getattr(getattr(cfg, "VAL", None), "t_start", 200)),
             n_rows=10,
-            seed=int(getattr(getattr(cfg, "VAL", None), "preview_seed", 9861)),
+            seed=int(getattr(getattr(cfg, "TRAIN", None), "seed", 42)),
             use_ema=bool(getattr(getattr(cfg, "VAL", None), "preview_use_ema", True)),
         )
     print("Train record saved in excel: ", excel_path)

@@ -4,6 +4,7 @@ DATA:
   val_input_dir: "/public/home/hnust15874739861/pro/publicdata/LSUI19/Val/input"
   val_gt_dir: "/public/home/hnust15874739861/pro/publicdata/LSUI19/Val/GT"
   record_path: "/public/home/hnust15874739861/pro/DiffusionProject/conditionN/record_data"
+  output_visual_path: "/public/home/hnust15874739861/pro/DiffusionProject/conditionN/output_visual"
   image_size: 256
   batch_size: 32
   num_workers: 4
@@ -41,7 +42,11 @@ TRAIN:
   save_dir: "checkpoints"
   use_amp: true
   seed: 42
-  recon_lambda: 0.1
+  recon_lambda: 1.0
+  lowfreq_lambda: 0.2
+  lowfreq_scale: 0.25
+  colorstat_lambda: 0.1
+
 
 EVAL:
   sample_steps: 1000        # 先用完整步数采样

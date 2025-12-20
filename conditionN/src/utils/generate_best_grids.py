@@ -138,7 +138,7 @@ def auto_generate_best_grids(
         load_checkpoint(model, ckpt_path, device=device, optimizer=None, use_ema=use_ema, strict=strict)
 
         cond = inp_b.to(device)
-        out_b = diffusion.sample_from_input(model, cond=cond, t_start=t_start).clamp(-1, 1).cpu()
+        out_b = diffusion.sample(model, cond=cond, deterministic=True).clamp(-1, 1).cpu()
 
         # 转 uint8 并保存拼图
         gt_list = [_to_uint8_chw(gt_b[i]) for i in range(n_rows)]
