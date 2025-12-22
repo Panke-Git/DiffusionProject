@@ -132,18 +132,14 @@ class GaussianDiffusion(nn.Module):
         return sqrt_a_bar * x_start + sqrt_one_minus_a_bar * noise
 
     # -------- 一些辅助函数 ----------
-    def predict_start_from_noise(
-            self, x_t: torch.Tensor, t: torch.Tensor, noise: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        反向去噪的过程
-        由 x_t 和预测噪声 eps 还原 x_0 估计:
-            x_0 = (x_t - sqrt(1 - a_bar_t) * eps) / sqrt(a_bar_t)
-        """
+    def predict_start_from_noise(self, x_t, t, noise, clip: bool = None):
         sqrt_a_bar = extract(self.sqrt_alphas_cumprod, t, x_t.shape)
         sqrt_one_minus_a_bar = extract(self.sqrt_one_minus_alphas_cumprod, t, x_t.shape)
         x0 = (x_t - sqrt_one_minus_a_bar * noise) / sqrt_a_bar
-        if self.clip_x_start:
+
+        if clip is None:
+            clip = self.clip_x_start
+        if clip:
             x0 = x0.clamp(-1.0, 1.0)
         return x0
 

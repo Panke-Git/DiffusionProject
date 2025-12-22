@@ -20,7 +20,19 @@ from .metrics import calculate_psnr, calculate_ssim
 from data.underwater_dataset import UnderwaterImageDataset
 from models.cond_unet_ddpm import UNetConditional
 from models.gaussian_diffusion import GaussianDiffusion
+from data.dataset import DataReader
 
+
+def collate_underwater_dict(batch):
+    out = {}
+    keys = batch[0].keys()
+    for k in keys:
+        v0 = batch[0][k]
+        if torch.is_tensor(v0):
+            out[k] = torch.stack([b[k] for b in batch], dim=0)
+        else:
+            out[k] = [b[k] for b in batch]
+    return out
 
 def set_seed(seed):
     import random
@@ -41,18 +53,23 @@ def update_ema(ema_model, model, ema_decay):
 
 
 def build_dataloaders(cfg):
-    train_ds = UnderwaterImageDataset(
-        input_dir=cfg.DATA.train_input_dir,
-        gt_dir=cfg.DATA.train_gt_dir,
-        image_size=cfg.DATA.image_size,
-        augment=cfg.DATA.augment,
+    train_ds = DataReader(
+        img_dir='/public/home/hnust15874739861/pro/UnderwaterImageEnhanced/dataset/LSUI19/Train',
+        input='input',
+        target='GT',
+        mode='train',
+        ori=True,
+        img_options={'w': 256, 'h': 256},
     )
-    val_ds = UnderwaterImageDataset(
-        input_dir=cfg.DATA.val_input_dir,
-        gt_dir=cfg.DATA.val_gt_dir,
-        image_size=cfg.DATA.image_size,
-        augment=False,
+    val_ds = DataReader(
+        img_dir='/public/home/hnust15874739861/pro/UnderwaterImageEnhanced/dataset/LSUI19/Val',
+        input='input',
+        target='GT',
+        mode='test',
+        ori=False,
+        img_options={'w': 256, 'h': 256},
     )
+
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg.DATA.batch_size,
@@ -60,6 +77,7 @@ def build_dataloaders(cfg):
         num_workers=cfg.DATA.num_workers,
         pin_memory=True,
         drop_last=True,
+        collate_fn=collate_underwater_dict,
     )
 
     val_loader = DataLoader(
@@ -69,6 +87,7 @@ def build_dataloaders(cfg):
         num_workers=cfg.DATA.num_workers,
         pin_memory=True,
         drop_last=False,
+        collate_fn=collate_underwater_dict,
     )
 
     return train_loader, val_loader

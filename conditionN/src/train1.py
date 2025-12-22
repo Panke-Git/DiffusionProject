@@ -23,7 +23,7 @@ from .utils.generate_best_grids import auto_generate_best_grids
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from .utils.train_utils import *
+from .utils.train_utils1 import *
 
 from .utils.config import load_config
 from .utils.record_utils import *
@@ -183,7 +183,7 @@ def train(cfg, device):
 
             need_x0 = (recon_lambda > 0.0) or (lowfreq_lambda > 0.0) or (colorstat_lambda > 0.0)
             if need_x0:
-                x0_pred = diffusion.predict_start_from_noise(x_t.float(), t, eps_pred.float(), clip=False)
+                x0_pred = diffusion.predict_start_from_noise(x_t.float(), t, eps_pred.float()).clamp(-1.0, 1.0)
 
                 x0_01 = ((x0.float() + 1.0) / 2.0).clamp(0.0, 1.0)
                 x0p_01 = ((x0_pred + 1.0) / 2.0).clamp(0.0, 1.0)
@@ -205,7 +205,7 @@ def train(cfg, device):
                     varp = x0p_01.var(dim=(2, 3), unbiased=False)
                     std = (var + 1e-6).sqrt()
                     stdp = (varp + 1e-6).sqrt()
-                    loss_color = F.l1_loss(mup, mu, reduction="mean")
+                    loss_color = F.l1_loss(mup, mu, reduction="mean") + F.l1_loss(stdp, std, reduction="mean")
                     loss = loss + colorstat_lambda * loss_color
 
             # 反向传播
@@ -344,7 +344,7 @@ def parse_args():
     parser.add_argument(
         "--device",
         type=str,
-        default="cuda:1",
+        default="cuda:0",
         help="Device to use, e.g. 'cuda', 'cuda:0', or 'cpu'",
     )
     return parser.parse_args()

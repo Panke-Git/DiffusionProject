@@ -32,7 +32,7 @@ DIFFUSION:
   clip_x_start: true
 
 TRAIN:
-  epochs: 500
+  epochs: 200
   lr: 0.0002
   weight_decay: 0.0
   grad_clip: 1.0
@@ -45,7 +45,7 @@ TRAIN:
   recon_lambda: 1.0
   lowfreq_lambda: 0.2
   lowfreq_scale: 0.25
-  colorstat_lambda: 0.1
+  colorstat_lambda: 0.02
 
 
 EVAL:
