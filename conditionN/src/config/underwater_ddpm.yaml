@@ -43,9 +43,9 @@ TRAIN:
   use_amp: true
   seed: 42
   recon_lambda: 1.0
-  lowfreq_lambda: 0.2
+  lowfreq_lambda: 0.05
   lowfreq_scale: 0.25
-  colorstat_lambda: 0.02
+  colorstat_lambda: 0.005
 
 
 EVAL:

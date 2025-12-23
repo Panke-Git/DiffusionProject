@@ -85,7 +85,7 @@ def validate_sampling(cfg, model, diffusion, val_loader, device):
         gt = batch["gt"].to(device)         # [-1,1]
         cond = batch["input"].to(device)    # [-1,1]
 
-        # ✅ 关键：推理阶段不使用 GT，只用 input 采样生成
+        # 推理阶段不使用 GT，只用 input 采样生成
         x_gen = diffusion.sample_from_input(model, cond, t_start=t_start).clamp(-1, 1)
 
         psnr = calculate_psnr(x_gen, gt)
@@ -124,7 +124,7 @@ def train(cfg, device):
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     # save_dir = getattr(cfg.TRAIN, "save_dir", "checkpoints")
-    # infinity 无穷大
+    # infinity
     best_loss = math.inf
     best_psnr = -math.inf
     best_ssim = -math.inf

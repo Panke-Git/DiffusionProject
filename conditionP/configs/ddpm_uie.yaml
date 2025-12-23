@@ -1,0 +1,44 @@
+exp_name: ddpm_uie_keep_core
+seed: 1234
+
+data:
+  train_input_dir: /public/home/hnust15874739861/pro/publicdata/LSUI19/Train/input
+  train_gt_dir: /public/home/hnust15874739861/pro/publicdata/LSUI19/Train/GT
+  val_input_dir: /public/home/hnust15874739861/pro/publicdata/LSUI19/Val/input
+  val_gt_dir: /public/home/hnust15874739861/pro/publicdata/LSUI19/Val/GT
+  img_size: 256
+  augment: true
+  num_workers: 4
+
+model:
+  cond_channels: 3
+  img_channels: 3
+  base_channels: 64
+  channel_mults: [1, 2, 4, 8]
+  num_res_blocks: 2
+  attn_resolutions: [16]
+  dropout: 0.0
+
+diffusion:
+  timesteps: 1000
+  beta_schedule: linear
+  linear_start: 1.0e-4
+  linear_end: 2.0e-2
+  loss_type: l1
+  clip_denoised: true
+
+train:
+  batch_size: 4
+  lr: 2.0e-4
+  weight_decay: 0.0
+  epochs: 50
+  grad_clip: 1.0
+  amp: true
+  log_interval: 50
+
+  val_interval: 1
+  val_max_batches: 4
+  sample_steps: 20
+  eta: 0.0
+
+  save_dir: runs

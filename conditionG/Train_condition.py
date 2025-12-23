@@ -177,7 +177,7 @@ def main():
     # [MOD] dataset args for your directory structure
     parser.add_argument("--data_root", type=str, default="/public/home/hnust15874739861/pro/publicdata/LSUI19", help="Root contains Train/Val folders.")
     parser.add_argument("--image_size", type=int, default=256)
-    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--num_workers", type=int, default=4)
 
     # diffusion / model
@@ -201,7 +201,7 @@ def main():
 
     set_seed(args.seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
     save_dir = Path(args.save_dir)
     ckpt_dir = save_dir / "checkpoints"
     img_dir = save_dir / "previews"
@@ -231,7 +231,7 @@ def main():
         T=args.timesteps,
         ch=args.ch,
         ch_mult=(1, 2, 2, 2),
-        attn=(1,),
+        attn=(3,),
         num_res_blocks=2,
         dropout=args.dropout,
         in_channels=6,   # [MOD]

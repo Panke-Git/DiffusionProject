@@ -158,7 +158,7 @@ class UNet(nn.Module):
         T: int,
         ch: int = 128,
         ch_mult=(1, 2, 2, 2),
-        attn=(1,),  # resolutions indices to apply attention (0 is highest res)
+        attn=(3,),  # resolutions indices to apply attention (0 is highest res)
         num_res_blocks: int = 2,
         dropout: float = 0.1,
         in_channels: int = 6,   # [MOD]
@@ -186,7 +186,7 @@ class UNet(nn.Module):
                 chs.append(now_ch)
                 if i in attn:
                     downblocks.append(AttnBlock(now_ch))
-                    chs.append(now_ch)
+                    # chs.append(now_ch)
             if i != len(ch_mult) - 1:
                 downblocks.append(DownSample(now_ch))
                 chs.append(now_ch)
@@ -233,7 +233,7 @@ class UNet(nn.Module):
                 h = layer(h)
             else:
                 h = layer(h, temb)
-            hs.append(h)
+                hs.append(h)
 
         for layer in self.middleblocks:
             if isinstance(layer, AttnBlock):
