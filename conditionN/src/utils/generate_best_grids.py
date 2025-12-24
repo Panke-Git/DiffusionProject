@@ -67,8 +67,9 @@ def auto_generate_best_grids(
     ckpt_dir,
     out_dir,
     t_start: int = 200,
+    step: int = 50,
     n_rows: int = 10,
-    seed: int = 1234,
+    seed: int = 42,
     use_ema: bool = True,
     strict: bool = True,
 ):
@@ -138,13 +139,26 @@ def auto_generate_best_grids(
         load_checkpoint(model, ckpt_path, device=device, optimizer=None, use_ema=use_ema, strict=strict)
 
         cond = inp_b.to(device)
-        out_b = diffusion.sample(model, cond=cond, deterministic=True).clamp(-1, 1).cpu()
+        random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
 
+        random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+        out_b = diffusion.ddim_sample(
+            model,
+            cond=cond,
+            steps=50,
+            eta=0.0,
+            clip_x0=True,
+        ).clamp(-1, 1).cpu()
         # 转 uint8 并保存拼图
         gt_list = [_to_uint8_chw(gt_b[i]) for i in range(n_rows)]
         inp_list = [_to_uint8_chw(inp_b[i]) for i in range(n_rows)]
         out_list = [_to_uint8_chw(out_b[i]) for i in range(n_rows)]
 
-        save_path = out_dir / f"grid_best_{tag}.png"
+        save_path = out_dir / f"grid_best_{tag}_t{t_start}.png"
         _save_grid_10x3(gt_list, inp_list, out_list, save_path, pad=2)
         print(f"[Preview] saved: {save_path}")

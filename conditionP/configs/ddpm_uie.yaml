@@ -1,5 +1,5 @@
 exp_name: ddpm_uie_keep_core
-seed: 1234
+seed: 42
 
 data:
   train_input_dir: /public/home/hnust15874739861/pro/publicdata/LSUI19/Train/input
@@ -31,7 +31,7 @@ train:
   batch_size: 4
   lr: 2.0e-4
   weight_decay: 0.0
-  epochs: 50
+  epochs: 100
   grad_clip: 1.0
   amp: true
   log_interval: 50

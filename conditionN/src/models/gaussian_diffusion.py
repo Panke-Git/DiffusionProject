@@ -286,6 +286,115 @@ class GaussianDiffusion(nn.Module):
         x = self.p_sample_loop(model, cond, (b, c, h, w), device=device, deterministic=deterministic)
         return x
 
+    @torch.no_grad()
+    def ddim_sample_from_x(
+            self,
+            model,
+            cond,
+            x_t,
+            t_start: int,
+            steps: int = 50,
+            eta: float = 0.0,
+            clip_x0: bool = True,
+    ):
+        device = x_t.device
+        b = x_t.size(0)
+
+        # t_start -> 0 的 (steps+1) 个点，形成 steps 次更新
+        times = torch.linspace(t_start, 0, steps + 1, device=device).round().long()
+        times = torch.unique_consecutive(times)
+        if times[-1].item() != 0:
+            times = torch.cat([times, torch.zeros(1, device=device, dtype=torch.long)], dim=0)
+
+        x = x_t
+        for i in range(len(times) - 1):
+            t = times[i].expand(b)
+            t_prev = times[i + 1].expand(b)
+
+            eps = model(x, cond, t)
+
+            a_t = extract(self.alphas_cumprod, t, x.shape)
+            a_prev = extract(self.alphas_cumprod, t_prev, x.shape)
+
+            sqrt_a_t = a_t.sqrt()
+            sqrt_1m_a_t = (1.0 - a_t).sqrt()
+
+            x0 = (x - sqrt_1m_a_t * eps) / sqrt_a_t
+
+            if clip_x0:
+                x0 = x0.clamp(-1.0, 1.0)
+                # 关键：clamp 后重算 eps，保持一致性
+                eps = (x - sqrt_a_t * x0) / (sqrt_1m_a_t + 1e-8)
+
+            if eta == 0.0:
+                sigma = 0.0
+                noise = 0.0
+            else:
+                sigma = eta * torch.sqrt((1 - a_prev) / (1 - a_t)) * torch.sqrt(torch.clamp(1 - a_t / a_prev, min=0.0))
+                noise = torch.randn_like(x)
+
+            c = torch.sqrt(torch.clamp(1.0 - a_prev - sigma ** 2, min=0.0))
+            x = a_prev.sqrt() * x0 + c * eps + sigma * noise
+
+        return x
+
+    @torch.no_grad()
+    def sample_from_input_ddim(self, model, cond, t_start: int = 400, steps: int = 50, eta: float = 0.0):
+        device = cond.device
+        b = cond.size(0)
+        t_start = int(max(0, min(t_start, self.timesteps - 1)))
+
+        t = torch.full((b,), t_start, device=device, dtype=torch.long)
+        noise = torch.randn_like(cond)
+        x_t = self.q_sample(cond, t, noise=noise)  # 从 input 加噪到 t_start
+
+        return self.ddim_sample_from_x(model, cond, x_t, t_start=t_start, steps=steps, eta=eta)
+
+    @torch.no_grad()
+    def ddim_sample(self, model, cond, steps: int = 50, eta: float = 0.0, clip_x0: bool = True):
+        device = cond.device
+        b, c, h, w = cond.shape
+
+        # steps 次更新，所以用 steps+1 个时间点
+        times = torch.linspace(self.timesteps - 1, 0, steps + 1, device=device).round().long()
+        times = torch.unique_consecutive(times)
+        if times[-1].item() != 0:
+            times = torch.cat([times, torch.zeros(1, device=device, dtype=torch.long)], dim=0)
+
+        x = torch.randn((b, c, h, w), device=device)
+
+        for i in range(len(times) - 1):
+            t = times[i].expand(b)
+            t_prev = times[i + 1].expand(b)
+
+            eps = model(x, cond, t)
+
+            a_t = extract(self.alphas_cumprod, t, x.shape)
+            a_prev = extract(self.alphas_cumprod, t_prev, x.shape)
+
+            sqrt_a_t = a_t.sqrt()
+            sqrt_1m_a_t = (1.0 - a_t).sqrt()
+
+            # x0 pred
+            x0 = (x - sqrt_1m_a_t * eps) / (sqrt_a_t + 1e-8)
+
+            if clip_x0:
+                x0 = x0.clamp(-1.0, 1.0)
+                # 关键：clip 后重算 eps，保持 (x0, eps) 一致
+                eps = (x - sqrt_a_t * x0) / (sqrt_1m_a_t + 1e-8)
+
+            if eta == 0.0:
+                sigma = 0.0
+                noise = 0.0
+            else:
+                sigma = eta * torch.sqrt((1 - a_prev) / (1 - a_t)) * torch.sqrt(torch.clamp(1 - a_t / a_prev, min=0.0))
+                noise = torch.randn_like(x)
+
+            c = torch.sqrt(torch.clamp(1.0 - a_prev - sigma ** 2, min=0.0))
+            x = a_prev.sqrt() * x0 + c * eps + sigma * noise
+
+        return x
+
 
 if __name__ == "__main__":
     # 简单自测: 检查前向/反向的 shape 是否合理

@@ -164,20 +164,24 @@ class GaussianDiffusionCore(nn.Module):
         return imgs if return_all else img
 
     @torch.no_grad()
+    @torch.no_grad()
     def p_sample_ddim(self, x_t, t, t_next, cond=None, extra_cond=None, eta=0.0):
         eps = self._eps_pred(x_t, t, cond=cond, extra_cond=extra_cond)
         alpha = extract(self.alphas_cumprod, t, x_t.shape)
+
         x0_pred = (x_t - (1 - alpha).sqrt() * eps) / alpha.sqrt()
+
         if self.clip_denoised:
             x0_pred = x0_pred.clamp(-1.0, 1.0)
+            eps = (x_t - alpha.sqrt() * x0_pred) / (1 - alpha).sqrt()
 
         if (t_next < 0).all():
             return x0_pred
 
         alpha_next = extract(self.alphas_cumprod, t_next, x_t.shape)
         sigma = eta * ((1 - alpha_next) / (1 - alpha) * (1 - alpha / alpha_next)).sqrt()
-        noise = torch.randn_like(x_t)
 
+        noise = torch.randn_like(x_t)
         dir_xt = (1 - alpha_next - sigma ** 2).sqrt() * eps
         x_next = alpha_next.sqrt() * x0_pred + dir_xt + sigma * noise
         return x_next

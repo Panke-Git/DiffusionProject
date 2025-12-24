@@ -42,6 +42,40 @@ def save_ckpt(path, model, optim, epoch, step, best):
     }, path)
 
 
+import csv
+
+
+def append_csv(log_path, row_dict):
+    file_exists = os.path.exists(log_path)
+    keys = list(row_dict.keys())
+    with open(log_path, "a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=keys)
+        if not file_exists:
+            w.writeheader()
+        w.writerow(row_dict)
+
+
+import json
+
+
+def load_json_list(path):
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        try:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+        except json.JSONDecodeError:
+            return []
+
+
+def save_json_list(path, data_list):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data_list, f, ensure_ascii=False, indent=4)
+    os.replace(tmp, path)
+
+
 @torch.no_grad()
 def validate(diffusion, model, loader, cfg, device, out_dir, epoch):
     diffusion.eval()
@@ -51,6 +85,7 @@ def validate(diffusion, model, loader, cfg, device, out_dir, epoch):
     steps = int(cfg["train"]["sample_steps"])
     eta = float(cfg["train"]["eta"])
 
+    loss_list = []
     psnr_list = []
     ssim_list = []
 
@@ -62,6 +97,9 @@ def validate(diffusion, model, loader, cfg, device, out_dir, epoch):
         gt = batch["gt"].to(device, non_blocking=True)
 
         extra = torch.ones((inp.shape[0], 1, inp.shape[2], inp.shape[3]), device=device, dtype=inp.dtype)
+
+        vloss = diffusion.p_losses(x_start=gt, cond=inp, extra_cond=extra, reduction="mean")
+        loss_list.append(vloss.detach())
 
         pred = diffusion.sample_loop_ddim(
             shape=gt.shape,
@@ -80,12 +118,13 @@ def validate(diffusion, model, loader, cfg, device, out_dir, epoch):
             save_path = os.path.join(out_dir, "val_ep%03d.png" % epoch)
             save_image((grid + 1) * 0.5, save_path, nrow=inp.shape[0])
 
-    psnr_m = torch.cat(psnr_list).mean().item() if len(psnr_list) else 0.0
-    ssim_m = torch.cat(ssim_list).mean().item() if len(ssim_list) else 0.0
+    val_loss = torch.stack(loss_list).mean().item() if len(loss_list) else 0.0
+    val_psnr = torch.cat(psnr_list).mean().item() if len(psnr_list) else 0.0
+    val_ssim = torch.cat(ssim_list).mean().item() if len(ssim_list) else 0.0
 
     diffusion.train()
     model.train()
-    return psnr_m, ssim_m
+    return val_loss, val_psnr, val_ssim
 
 
 def main():
@@ -96,16 +135,18 @@ def main():
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
-    set_seed(int(cfg.get("seed", 1234)))
+    set_seed(int(cfg.get("seed", 42)))
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
     torch.backends.cudnn.benchmark = True
 
-    exp_dir = os.path.join(cfg["train"]["save_dir"], cfg["exp_name"])
+    exp_dir = os.path.join(cfg["train"]["save_dir"], "V01")
     ckpt_dir = os.path.join(exp_dir, "ckpt")
     img_dir = os.path.join(exp_dir, "images")
     ensure_dir(ckpt_dir)
     ensure_dir(img_dir)
+    log_csv = os.path.join(exp_dir, "metrics.csv")
+    metrics_json = os.path.join(exp_dir, "metrics.json")
 
     train_ds = UnderwaterPairDataset(
         cfg["data"]["train_input_dir"],
@@ -168,7 +209,7 @@ def main():
         weight_decay=float(cfg["train"]["weight_decay"])
     )
 
-    use_amp = bool(cfg["train"]["amp"]) and (device == "cuda")
+    use_amp = bool(cfg["train"]["amp"]) and torch.cuda.is_available()
     scaler = GradScaler(enabled=use_amp)
 
     best = {"loss": 1e9, "psnr": -1.0, "ssim": -1.0}
@@ -180,6 +221,8 @@ def main():
     for epoch in range(1, int(cfg["train"]["epochs"]) + 1):
         model.train()
         diffusion.train()
+        epoch_loss_sum = 0.0
+        epoch_loss_cnt = 0
 
         t0 = time.time()
         running = 0.0
@@ -204,28 +247,65 @@ def main():
             scaler.step(optim)
             scaler.update()
 
+            epoch_loss_sum += loss.item()
+            epoch_loss_cnt += 1
+
             step += 1
             running += loss.item()
-
             if step % int(cfg["train"]["log_interval"]) == 0:
                 avg = running / int(cfg["train"]["log_interval"])
                 running = 0.0
-                print("[E%03d][S%07d] loss=%.4f" % (epoch, step, avg))
-                if avg < best["loss"]:
-                    best["loss"] = avg
-                    save_ckpt(os.path.join(ckpt_dir, "best_loss.pt"), model, optim, epoch, step, best)
+                print("[TRAIN][E%03d][S%07d] loss(avg/%d)=%.4f" %
+                      (epoch, step, int(cfg["train"]["log_interval"]), avg))
+
+
+        train_loss_epoch = epoch_loss_sum / max(1, epoch_loss_cnt)
 
         if epoch % int(cfg["train"]["val_interval"]) == 0:
-            v_psnr, v_ssim = validate(diffusion, model, val_loader, cfg, device, img_dir, epoch)
-            print("[VAL][E%03d] PSNR=%.3f SSIM=%.4f time=%.1fs" % (epoch, v_psnr, v_ssim, time.time() - t0))
+            val_loss, v_psnr, v_ssim = validate(diffusion, model, val_loader, cfg, device, img_dir, epoch)
+            print("[VAL][E%03d] vloss=%.4f PSNR=%.3f SSIM=%.4f time=%.1fs" %
+                  (epoch, val_loss, v_psnr, v_ssim, time.time() - t0))
 
+            # --- best by PSNR ---
             if v_psnr > best["psnr"]:
-                best["psnr"] = v_psnr
+                best["psnr"] = float(v_psnr)
                 save_ckpt(os.path.join(ckpt_dir, "best_psnr.pt"), model, optim, epoch, step, best)
+
+            # --- best by SSIM ---
             if v_ssim > best["ssim"]:
-                best["ssim"] = v_ssim
+                best["ssim"] = float(v_ssim)
                 save_ckpt(os.path.join(ckpt_dir, "best_ssim.pt"), model, optim, epoch, step, best)
 
+        else:
+            val_loss, v_psnr, v_ssim = 0.0, 0.0, 0.0
+        if train_loss_epoch < best["loss"]:
+            best["loss"] = float(train_loss_epoch)
+            save_ckpt(os.path.join(ckpt_dir, "best_loss.pt"), model, optim, epoch, step, best)
+        print("[E%03d] train_loss=%.4f | val_loss=%.4f | PSNR=%.3f | SSIM=%.4f" %
+              (epoch, train_loss_epoch, val_loss, v_psnr, v_ssim))
+        # --- write CSV ---
+        append_csv(log_csv, {
+            "epoch": int(epoch),
+            "train_loss": float(train_loss_epoch),
+            "val_loss": float(val_loss),
+            "val_psnr": float(v_psnr),
+            "val_ssim": float(v_ssim),
+            "step": int(step),
+            "lr": float(optim.param_groups[0]["lr"]),
+        })
+
+        # --- write JSON list ---
+        records = load_json_list(metrics_json)
+        records.append({
+            "epoch": int(epoch),
+            "train_loss": float(train_loss_epoch),
+            "val_loss": float(val_loss),
+            "val_psnr": float(v_psnr),
+            "val_ssim": float(v_ssim),
+        })
+        save_json_list(metrics_json, records)
+
+        # --- always save last ---
         save_ckpt(os.path.join(ckpt_dir, "last.pt"), model, optim, epoch, step, best)
 
     print("[DONE] Best:", best)
@@ -233,4 +313,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
