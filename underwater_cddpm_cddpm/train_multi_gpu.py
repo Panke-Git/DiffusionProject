@@ -5,10 +5,10 @@ import argparse
 import time
 import math
 import json
+import ast
 import random
 import pytz
 from datetime import datetime
-
 import yaml
 from typing import Dict, Any, Tuple, Optional, List
 
@@ -45,32 +45,122 @@ def load_config(path: str) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
+def parse_devices_arg(devices_arg: Any) -> Optional[List[str]]:
+    """Parse devices from:
+    - None
+    - list like ['cuda:0','cuda:1']
+    - string: "cuda:0,cuda:1" or "0,1" or "['cuda:0','cuda:1']"
+    Returns a list of normalized device strings, e.g. ['cuda:0','cuda:1'] or ['cpu'].
+    """
+    if devices_arg is None:
+        return None
+
+    # If already a list/tuple
+    if isinstance(devices_arg, (list, tuple)):
+        out = []
+        for d in devices_arg:
+            if isinstance(d, int):
+                out.append(f"cuda:{d}")
+            else:
+                out.append(str(d).strip())
+        return out
+
+    s = str(devices_arg).strip()
+    if not s:
+        return None
+
+    # Try python literal list
+    if s.startswith('[') and s.endswith(']'):
+        try:
+            obj = ast.literal_eval(s)
+            if isinstance(obj, (list, tuple)):
+                return parse_devices_arg(list(obj))
+        except Exception:
+            pass
+
+    # Comma separated
+    parts = [p.strip() for p in s.split(',') if p.strip()]
+    if not parts:
+        return None
+
+    out = []
+    for p in parts:
+        # allow "0" / "1" as shorthand
+        if p.isdigit():
+            out.append(f"cuda:{int(p)}")
+        else:
+            out.append(p)
+    return out
+
+
+def devices_to_device_ids(devices: List[str]) -> Tuple[torch.device, List[int]]:
+    """Convert device strings to:
+    - primary torch.device
+    - device_ids list for DataParallel (cuda indices)
+
+    Examples:
+      ['cuda:0','cuda:1'] -> (cuda:0, [0,1])
+      ['cuda:1'] -> (cuda:1, [1])
+      ['cpu'] -> (cpu, [])
+    """
+    if len(devices) == 0:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu"), []
+
+    # CPU-only
+    if any(str(d).lower() == "cpu" for d in devices):
+        return torch.device("cpu"), []
+
+    # Normalize cuda devices
+    ids: List[int] = []
+    for d in devices:
+        d = str(d).strip().lower()
+        if d.startswith("cuda:"):
+            idx = int(d.split(":")[1])
+            ids.append(idx)
+        elif d == "cuda":
+            ids.append(0)
+        else:
+            # fallback try parse like "0"
+            if d.isdigit():
+                ids.append(int(d))
+            else:
+                raise ValueError(f"Unsupported device spec: {d}")
+
+    primary = torch.device(f"cuda:{ids[0]}")
+    return primary, ids
+
+
 def save_checkpoint(
-    path: str,
-    model: nn.Module,
-    ema: Optional[EMA],
-    cfg: Dict[str, Any],
-    meta: Dict[str, Any],
-    best_records: Optional[Dict[str, Any]] = None,
+        path: str,
+        model: nn.Module,
+        ema: Optional[EMA],
+        cfg: Dict[str, Any],
+        meta: Dict[str, Any],
+        best_records: Optional[Dict[str, Any]] = None,
 ):
     """Save checkpoint.
 
     Notes:
-    - If EMA is enabled, we save EMA-shadow weights into ckpt["model"] to ensure inference quality.
-      Raw (non-EMA) weights are additionally stored in ckpt["model_raw"].
+    - Supports nn.DataParallel: weights are saved WITHOUT the 'module.' prefix by always saving model.module when present.
+    - If EMA is enabled, we save EMA-shadow weights into ckpt['model'] to ensure inference quality.
+      Raw (non-EMA) weights are additionally stored in ckpt['model_raw'].
     - best_records is stored both as dict and as a pretty JSON string for readability.
     """
     ensure_dir(os.path.dirname(path))
 
-    model_raw = model.state_dict()
+    base_model = model.module if isinstance(model, nn.DataParallel) else model
+
+    # Raw (non-EMA) weights
+    model_raw = base_model.state_dict()
     model_to_save = model_raw
 
+    # EMA-shadow weights (recommended for sampling/inference)
     if ema is not None:
         try:
-            ema.apply_shadow(model)
-            model_to_save = model.state_dict()
+            ema.apply_shadow(base_model)
+            model_to_save = base_model.state_dict()
         finally:
-            ema.restore(model)
+            ema.restore(base_model)
 
     ckpt = {
         "model": model_to_save,
@@ -79,9 +169,12 @@ def save_checkpoint(
         "config": cfg,
         "meta": meta,
         "best_records": best_records,
-        "best_records_json": json.dumps(best_records, ensure_ascii=False, indent=2) if best_records is not None else None,
+        "best_records_json": json.dumps(best_records, ensure_ascii=False,
+                                        indent=2) if best_records is not None else None,
+        "is_data_parallel": isinstance(model, nn.DataParallel),
     }
     torch.save(ckpt, path)
+
 
 def build_model(cfg: Dict[str, Any]) -> UNetModel:
     m = cfg["model"]
@@ -117,12 +210,12 @@ def build_diffusion(cfg: Dict[str, Any]) -> GaussianDiffusion:
 
 @torch.no_grad()
 def sample_images(
-    diffusion: GaussianDiffusion,
-    model: nn.Module,
-    cond: torch.Tensor,
-    sampler: str = "ddim",
-    sample_steps: int = 200,
-    eta: float = 0.0,
+        diffusion: GaussianDiffusion,
+        model: nn.Module,
+        cond: torch.Tensor,
+        sampler: str = "ddim",
+        sample_steps: int = 200,
+        eta: float = 0.0,
 ):
     device = cond.device
     b, _, h, w = cond.shape
@@ -138,12 +231,12 @@ def sample_images(
 
 @torch.no_grad()
 def validate(
-    cfg: Dict[str, Any],
-    diffusion: GaussianDiffusion,
-    model: nn.Module,
-    val_loader: DataLoader,
-    device: torch.device,
-    epoch: int,
+        cfg: Dict[str, Any],
+        diffusion: GaussianDiffusion,
+        model: nn.Module,
+        val_loader: DataLoader,
+        device: torch.device,
+        epoch: int,
 ) -> Dict[str, float]:
     model.eval()
 
@@ -204,13 +297,13 @@ def _timestamp() -> str:
 
 @torch.no_grad()
 def make_final_grids(
-    cfg: Dict[str, Any],
-    diffusion: GaussianDiffusion,
-    model: nn.Module,
-    ema: Optional[EMA],
-    val_ds: PairedImageDataset,
-    device: torch.device,
-    run_dir: str,
+        cfg: Dict[str, Any],
+        diffusion: GaussianDiffusion,
+        model: nn.Module,
+        ema: Optional[EMA],
+        val_ds: PairedImageDataset,
+        device: torch.device,
+        run_dir: str,
 ):
     sacfg = cfg.get("sampling_after_train", {})
     if not bool(sacfg.get("enabled", True)):
@@ -251,17 +344,18 @@ def make_final_grids(
             continue
 
         ckpt = torch.load(ckpt_path, map_location="cpu")
-        model.load_state_dict(ckpt["model"], strict=True)
+        _m = model.module if isinstance(model, nn.DataParallel) else model
+        _m.load_state_dict(ckpt["model"], strict=True)
 
         # ✅ 优先用 ckpt 里保存的 EMA 权重生成
         if ckpt.get("ema") is not None and ema is not None:
             ema.load_state_dict(ckpt["ema"])
-            ema.apply_shadow(model)
+            ema.apply_shadow(_m)
 
         pred = sample_images(diffusion, model, cond_batch, sampler=sampler, sample_steps=sample_steps, eta=eta)
 
         if ckpt.get("ema") is not None and ema is not None:
-            ema.restore(model)
+            ema.restore(_m)
 
         preds = [pred[i].detach().cpu() for i in range(pred.shape[0])]
         grid = make_triplet_grid(
@@ -284,7 +378,7 @@ def make_final_grids(
                 return "NA"
 
         fname = (
-            f"grid_{tag}_psnr{_fmt(vpsnr,2)}_ssim{_fmt(vssim,4)}_loss{_fmt(vloss,6)}_"
+            f"grid_{tag}_psnr{_fmt(vpsnr, 2)}_ssim{_fmt(vssim, 4)}_loss{_fmt(vloss, 6)}_"
             f"{sampler}{sample_steps}.png"
         )
         save_pil(grid, os.path.join(grid_dir, fname))
@@ -293,9 +387,11 @@ def make_final_grids(
 
 def main():
     parser = argparse.ArgumentParser()
-    # 获取config参数以及版本号；
-    parser.add_argument("--config", type=str, default='/public/home/hnust15874739861/pro/DiffusionProject/underwater_cddpm_cddpm/configs/train.yaml')
+    parser.add_argument("--config", type=str,
+                        default='/public/home/hnust15874739861/pro/DiffusionProject/underwater_cddpm_cddpm/configs/train_multi_gpu.yaml')
     parser.add_argument("--version", type=str, default=None, help="Override project.version")
+    parser.add_argument("--devices", type=str, default=None,
+                        help="Custom devices, e.g. cuda:0,cuda:1 or ['cuda:0','cuda:1'] or 0,1")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -303,12 +399,23 @@ def main():
     seed = int(cfg.get("seed", cfg.get("project", {}).get("seed", 42)))
     set_seed(seed)
 
-    device = get_device()
-    print(f"Using device: {device}")
+    # ---- Device selection (supports custom multi-GPU list) ----
+    proj = cfg.get("project", {})
+    cfg_devices = proj.get("devices", None)
+    devices_list = parse_devices_arg(args.devices) or parse_devices_arg(cfg_devices)
+
+    if devices_list is None:
+        device = get_device()
+        device_ids = []
+        print(f"Using device (auto): {device}")
+    else:
+        device, device_ids = devices_to_device_ids(devices_list)
+        if device.type == "cuda":
+            torch.cuda.set_device(device_ids[0])
+        print(f"Using devices: {devices_list} -> primary={device}, device_ids={device_ids}")
 
     # ===== Run dir: ./runs/{version}/{timestamp} =====
-    # 获取关于project的一些信息
-    proj = cfg.get("project", {})
+    # proj already read above
     run_root = str(proj.get("run_root", "runs"))
     version = args.version or str(proj.get("version", "V01"))
     out_dir = os.path.join(run_root, version, _timestamp())
@@ -368,6 +475,11 @@ def main():
     )
 
     model = build_model(cfg).to(device)
+    # Wrap with DataParallel if multiple CUDA devices are specified
+    if device.type == "cuda" and isinstance(device_ids, list) and len(device_ids) > 1:
+        model = nn.DataParallel(model, device_ids=device_ids, output_device=device_ids[0])
+        print(f"[DataParallel] enabled on device_ids={device_ids}")
+    base_model = model.module if isinstance(model, nn.DataParallel) else model
     diffusion = build_diffusion(cfg).to(device)
 
     optimizer = torch.optim.AdamW(
@@ -381,7 +493,7 @@ def main():
 
     ema_cfg = tcfg.get("ema", {})
     ema_enabled = bool(ema_cfg.get("enabled", True))
-    ema = EMA(model, decay=float(ema_cfg.get("decay", 0.9999))) if ema_enabled else None
+    ema = EMA(base_model, decay=float(ema_cfg.get("decay", 0.9999))) if ema_enabled else None
     ema_update_after_step = int(ema_cfg.get("update_after_step", 0))
     ema_update_every = int(ema_cfg.get("update_every", 1))
 
@@ -391,8 +503,8 @@ def main():
     best_records: Dict[str, Any] = {
         "PSNR": {"top_psnr": -1e9, "top_psnr_data": None},
         "SSIM": {"top_ssim": -1e9, "top_ssim_data": None},
-        "SUM":  {"top_sum":  -1e9, "top_sum_data":  None},
-        "LOSS": {"top_loss":  1e9, "top_loss_data": None},
+        "SUM": {"top_sum": -1e9, "top_sum_data": None},
+        "LOSS": {"top_loss": 1e9, "top_loss_data": None},
     }
     best_records_path = os.path.join(out_dir, "checkpoints", "best_records.json")
     global_step = 0
@@ -432,7 +544,7 @@ def main():
             scaler.update()
 
             if ema is not None and global_step >= ema_update_after_step and (global_step % ema_update_every == 0):
-                ema.update(model)
+                ema.update(base_model)
 
             global_step += 1
             running_loss += loss.item()
@@ -448,10 +560,10 @@ def main():
 
         if do_val:
             if ema is not None:
-                ema.apply_shadow(model)
+                ema.apply_shadow(base_model)
             metrics = validate(cfg, diffusion, model, val_loader, device, epoch)
             if ema is not None:
-                ema.restore(model)
+                ema.restore(base_model)
 
             val_loss = metrics["val_loss"]
             val_psnr = metrics["val_psnr"]
