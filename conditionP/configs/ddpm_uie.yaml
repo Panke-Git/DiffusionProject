@@ -31,14 +31,14 @@ train:
   batch_size: 4
   lr: 2.0e-4
   weight_decay: 0.0
-  epochs: 100
+  epochs: 50
   grad_clip: 1.0
   amp: true
   log_interval: 50
 
   val_interval: 1
-  val_max_batches: 4
-  sample_steps: 20
+  val_max_batches: 25
+  sample_steps: 50
   eta: 0.0
 
   save_dir: runs

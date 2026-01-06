@@ -92,6 +92,11 @@ def validate(diffusion, model, loader, cfg, device, out_dir, epoch):
     for bi, batch in enumerate(loader):
         if bi >= max_batches:
             break
+        base_seed = int(cfg.get("seed", 42))
+        seed = base_seed + bi
+        random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
 
         inp = batch["input"].to(device, non_blocking=True)
         gt = batch["gt"].to(device, non_blocking=True)
@@ -140,7 +145,7 @@ def main():
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     torch.backends.cudnn.benchmark = True
 
-    exp_dir = os.path.join(cfg["train"]["save_dir"], "V01")
+    exp_dir = os.path.join(cfg["train"]["save_dir"], "V02")
     ckpt_dir = os.path.join(exp_dir, "ckpt")
     img_dir = os.path.join(exp_dir, "images")
     ensure_dir(ckpt_dir)
