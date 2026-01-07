@@ -360,7 +360,7 @@ def main():
     # ✅ Val 用 batch_size=1：评估更稳定，也更符合“随机挑 10 张”的逻辑
     val_loader = DataLoader(
         val_ds,
-        batch_size=32,
+        batch_size=16,
         shuffle=False,
         num_workers=int(dcfg.get("num_workers", 4)),
         pin_memory=True,

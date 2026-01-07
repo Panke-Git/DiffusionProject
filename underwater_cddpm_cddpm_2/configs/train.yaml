@@ -1,11 +1,6 @@
 # ========== Reproducibility ==========
 seed: 42
 
-project:
-  run_root: runs        # 固定根目录
-  version: V01          # 你说的版本号
-  seed: 42
-
 # ========== Paths ==========
 paths:
   train_input: /public/home/hnust15874739861/pro/publicdata/LSUI19/Train/input
@@ -18,9 +13,7 @@ paths:
 data:
   image_size: 256
   random_crop: true
-  val_random_crop: false
   random_flip: true
-  hflip: true
   num_workers: 4
 
 # ========== Model (Full DDPM U-Net with Attention) ==========
@@ -29,7 +22,7 @@ model:
   cond_channels: 3      # condition channels (RGB underwater input)
   out_channels: 3       # predicted noise channels (RGB)
   model_channels: 128
-  channel_mult: [1, 1, 2, 2, 4, 4]
+  channel_mult: [1, 2, 4, 8]
   num_res_blocks: 2
   attention_resolutions: [16, 8]  # spatial sizes (e.g. 16x16 and 8x8) that use full self-attention
   num_heads: 4
@@ -49,7 +42,7 @@ diffusion:
 # ========== Training ==========
 training:
   epochs: 200
-  batch_size: 16
+  batch_size: 4
   lr: 2.0e-4
   weight_decay: 0.0
   grad_clip: 1.0
@@ -66,7 +59,7 @@ validation:
   interval_epochs: 1
   # How many val images to compute PSNR/SSIM on by sampling.
   # -1 means use all val images (can be slow).
-  num_samples: -1
+  num_samples: 50
 
   # Sampler for metrics (ddim is much faster than full ddpm):
   sampler: ddim           # ddpm | ddim
@@ -81,6 +74,5 @@ sampling_after_train:
   enabled: true
   split: val              # val | train
   sampler: ddim           # ddpm | ddim
-  sample_steps: 200
+  sample_steps: 50
   eta: 0.0
-  num_pick: 10

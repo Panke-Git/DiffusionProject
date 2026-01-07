@@ -1,9 +1,11 @@
 import os
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from PIL import Image
+import torch
 from torch.utils.data import Dataset
 import torchvision.transforms.functional as TF
 import random
+
 
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
 
@@ -27,20 +29,18 @@ class PairedImageDataset(Dataset):
         image_size: int = 256,
         random_crop: bool = True,
         random_flip: bool = True,
-        # ✅ True: 直接 resize 到 (image_size, image_size)，跳过所有 crop（val/infer 用）
-        resize_only: bool = False,
     ):
         self.input_dir = input_dir
         self.gt_dir = gt_dir
         self.image_size = int(image_size)
         self.random_crop = bool(random_crop)
         self.random_flip = bool(random_flip)
-        self.resize_only = bool(resize_only)
 
         self.names = _list_images(self.input_dir)
         if len(self.names) == 0:
             raise RuntimeError(f"No images found in: {self.input_dir}")
 
+        # ensure GT exists
         missing = []
         for n in self.names:
             if not os.path.exists(os.path.join(self.gt_dir, n)):
@@ -54,11 +54,15 @@ class PairedImageDataset(Dataset):
     def __len__(self):
         return len(self.names)
 
-    def _paired_resize_min_edge(self, inp: Image.Image, gt: Image.Image) -> Tuple[Image.Image, Image.Image]:
+    def _paired_resize(self, inp: Image.Image, gt: Image.Image) -> Tuple[Image.Image, Image.Image]:
+        # Resize both to at least image_size on the shorter edge, preserving aspect ratio.
+        # Then crop to (image_size, image_size).
         w, h = inp.size
+        # Ensure GT same size; if not, resize GT to input size first
         if gt.size != inp.size:
             gt = gt.resize((w, h), resample=Image.BICUBIC)
 
+        # scale so that min(h,w) >= image_size
         scale = self.image_size / min(h, w)
         if scale != 1.0:
             new_w = int(round(w * scale))
@@ -92,21 +96,22 @@ class PairedImageDataset(Dataset):
         inp = Image.open(inp_path).convert("RGB")
         gt = Image.open(gt_path).convert("RGB")
 
-        if self.resize_only:
-            # ✅ Val: 直接 resize 到 256×256，不做任何 crop
-            inp = inp.resize((self.image_size, self.image_size), resample=Image.BICUBIC)
-            if gt.size != inp.size:
-                gt = gt.resize(inp.size, resample=Image.BICUBIC)
-            # gt = gt.resize((self.image_size, self.image_size), resample=Image.BICUBIC)
-        else:
-            inp, gt = self._paired_resize_min_edge(inp, gt)
-            inp, gt = self._paired_crop(inp, gt)
+        inp, gt = self._paired_resize(inp, gt)
+        inp, gt = self._paired_crop(inp, gt)
 
         if self.random_flip and random.random() < 0.5:
             inp = TF.hflip(inp)
             gt = TF.hflip(gt)
 
-        inp_t = TF.to_tensor(inp) * 2.0 - 1.0
-        gt_t = TF.to_tensor(gt) * 2.0 - 1.0
+        inp_t = TF.to_tensor(inp)  # [0,1]
+        gt_t = TF.to_tensor(gt)
 
-        return {"name": name, "cond": inp_t, "gt": gt_t}
+        # Normalize to [-1,1]
+        inp_t = inp_t * 2.0 - 1.0
+        gt_t = gt_t * 2.0 - 1.0
+
+        return {
+            "name": name,
+            "cond": inp_t,
+            "gt": gt_t,
+        }
