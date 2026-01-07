@@ -30,12 +30,7 @@ from utils.plot import plot_train_val_loss
 
 def compute_sum_metric(psnr: float, ssim: float, val_loss: float) -> float:
     """
-    你示例里的 SUM=120.056... 看起来不是简单 psnr+ssim。
-    我这里给一个通用方案：你可以按自己想要的定义改。
-    常见定义：
-      - sum = psnr + 100*ssim
-      - sum = psnr + 100*ssim - 10*val_loss
-    下面用：psnr + 100*ssim（和你示例量级更接近）
+    计算SSIM和PNSR的和
     """
     return float(psnr + 100.0 * ssim)
 
