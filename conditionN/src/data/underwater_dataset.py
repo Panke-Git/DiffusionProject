@@ -7,39 +7,32 @@
 """
 from pathlib import Path
 from typing import List, Tuple, Dict
-
-from PIL import Image
 import torch
 from torch.utils.data import Dataset
-from torchvision import transforms
-from torchvision.transforms import InterpolationMode
-import torchvision.transforms.functional as TF
+from PIL import Image
+import numpy as np
 
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+
+
+import inspect
 
 IMG_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif"}
-
 
 def is_image_file(path: Path) -> bool:
     return path.suffix.lower() in IMG_EXTENSIONS
 
 
-class UnderwaterImageDataset(Dataset):
-    """
-    水下图像增强数据集:
-    - input_dir:  原始水下图像目录 (条件)
-    - gt_dir:     参考 GT 图像目录 (目标)
-    要求: input 和 gt 文件名一一对应, 如:
-        /Train/input/0001.png
-        /Train/GT/0001.png
-    """
+def _A_RandomResizedCrop(h, w, **kwargs):
+    sig = inspect.signature(A.RandomResizedCrop)
+    if "size" in sig.parameters:  # albumentations 2.x
+        return A.RandomResizedCrop(size=(h, w), **kwargs)
+    else:                         # albumentations 1.x
+        return A.RandomResizedCrop(height=h, width=w, **kwargs)
 
-    def __init__(
-        self,
-        input_dir: str,
-        gt_dir: str,
-        image_size: int = 256,
-        augment: bool = False,
-    ):
+class UnderwaterImageDataset(Dataset):
+    def __init__(self, input_dir: str, gt_dir: str, image_size: int = 256, augment: bool = True):
         super().__init__()
         self.input_dir = Path(input_dir)
         self.gt_dir = Path(gt_dir)
@@ -51,34 +44,51 @@ class UnderwaterImageDataset(Dataset):
         if not self.gt_dir.is_dir():
             raise FileNotFoundError(f"gt_dir not found: {self.gt_dir}")
 
-        # 收集所有 input 图像, 并匹配对应的 GT
         self.samples: List[Tuple[Path, Path]] = []
-        input_files = sorted(
-            [p for p in self.input_dir.iterdir() if p.is_file() and is_image_file(p)]
-        )
-
+        input_files = sorted([p for p in self.input_dir.iterdir() if p.is_file() and is_image_file(p)])
         if len(input_files) == 0:
             raise RuntimeError(f"No image files found in {self.input_dir}")
 
         for in_path in input_files:
-            rel_name = in_path.name  # 只按文件名匹配
-            gt_path = self.gt_dir / rel_name
-            if gt_path.is_file():
-                self.samples.append((in_path, gt_path))
-            else:
-                # 严格模式: 找不到对应 GT 就直接报错
+            gt_path = self.gt_dir / in_path.name
+            if not gt_path.is_file():
                 raise FileNotFoundError(f"GT file not found for {in_path} -> {gt_path}")
+            self.samples.append((in_path, gt_path))
 
-        if len(self.samples) == 0:
-            raise RuntimeError("No paired samples found!")
-
-        # 图像变换: 统一到 image_size, 并归一到 [-1, 1]
-        self.base_transform = transforms.Compose([
-            transforms.Resize(image_size, interpolation=InterpolationMode.BICUBIC),
-            transforms.CenterCrop(image_size),
-            transforms.ToTensor(),  # [0, 1]
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),  # -> [-1, 1]
-        ])
+        # 训练增强（移植你第一个的思路），并保持 paired
+        if self.augment:
+            self.transform = A.Compose(
+                [
+                    A.OneOf(
+                        [A.HorizontalFlip(p=1.0), A.VerticalFlip(p=1.0)],
+                        p=0.3
+                    ),
+                    A.RandomRotate90(p=0.3),
+                    A.Rotate(limit=30, p=0.3),     # 你原来是 A.Rotate(p=0.3)，这里建议加 limit
+                    A.Transpose(p=0.3),
+                    _A_RandomResizedCrop(
+                        image_size, image_size,
+                        scale=(0.7, 1.0),
+                        ratio=(0.75, 1.333),
+                        p=1.0
+                    ),
+                    # 归一化到 [-1,1]（等价于 mean=0.5,std=0.5）
+                    A.Normalize(mean=(0.5,0.5,0.5), std=(0.5,0.5,0.5), max_pixel_value=255.0),
+                    ToTensorV2(),
+                ],
+                additional_targets={"gt": "image"},
+            )
+        else:
+            # 验证/推理：稳定的 resize + center crop（或你也可以直接 Resize 到 image_size）
+            self.transform = A.Compose(
+                [
+                    A.Resize(image_size, image_size, interpolation=1),  # 1=linear, 也可以换成 cubic(2)
+                    A.CenterCrop(image_size, image_size),
+                    A.Normalize(mean=(0.5,0.5,0.5), std=(0.5,0.5,0.5), max_pixel_value=255.0),
+                    ToTensorV2(),
+                ],
+                additional_targets={"gt": "image"},
+            )
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -86,21 +96,14 @@ class UnderwaterImageDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         in_path, gt_path = self.samples[idx]
 
-        inp = Image.open(in_path).convert("RGB")
-        gt = Image.open(gt_path).convert("RGB")
+        inp = np.array(Image.open(in_path).convert("RGB"))
+        gt = np.array(Image.open(gt_path).convert("RGB"))
 
-        # 数据增强: 保证 input 与 GT 完全一致 (例如水平翻转)
-        if self.augment:
-            if torch.rand(1).item() < 0.5:
-                inp = TF.hflip(inp)
-                gt = TF.hflip(gt)
-
-        inp_t = self.base_transform(inp)  # (3, H, W), [-1,1]
-        gt_t = self.base_transform(gt)    # (3, H, W), [-1,1]
+        out = self.transform(image=inp, gt=gt)
 
         return {
-            "input": inp_t,          # 条件图像 cond
-            "gt": gt_t,              # 目标 x0
+            "input": out["image"].float(),   # (3,H,W) in [-1,1]
+            "gt": out["gt"].float(),         # (3,H,W) in [-1,1]
             "input_path": str(in_path),
             "gt_path": str(gt_path),
         }

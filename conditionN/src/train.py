@@ -201,10 +201,6 @@ def train(cfg, device):
                 if colorstat_lambda > 0.0:
                     mu = x0_01.mean(dim=(2, 3))
                     mup = x0p_01.mean(dim=(2, 3))
-                    var = x0_01.var(dim=(2, 3), unbiased=False)
-                    varp = x0p_01.var(dim=(2, 3), unbiased=False)
-                    std = (var + 1e-6).sqrt()
-                    stdp = (varp + 1e-6).sqrt()
                     loss_color = F.l1_loss(mup, mu, reduction="mean")
                     loss = loss + colorstat_lambda * loss_color
 
