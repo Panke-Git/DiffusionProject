@@ -17,7 +17,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from data.paired_dataset import PairedImageDataset
+from data.paired_dataset_resize import PairedImageDataset
 from models.unet import UNetModel
 from diffusion.gaussian_diffusion import GaussianDiffusion, DiffusionConfig
 from utils.misc import set_seed, get_device, ensure_dir
@@ -26,6 +26,7 @@ from utils.metrics import psnr as psnr_fn, ssim as ssim_fn
 from utils.image import denorm_to_0_1
 from utils.grid import make_triplet_grid, save_pil
 from utils.plot import plot_train_val_loss
+from data.paired_dataset_old import DataReader
 
 
 def compute_sum_metric(psnr: float, ssim: float, val_loss: float) -> float:
@@ -429,24 +430,41 @@ def main():
 
     dcfg = cfg["data"]
 
-    train_ds = PairedImageDataset(
-        cfg["paths"]["train_input"],
-        cfg["paths"]["train_gt"],
-        image_size=dcfg["image_size"],
-        random_crop=dcfg.get("random_crop", True),
-        random_flip=dcfg.get("random_flip", True),
-        resize_only=False,
+    # train_ds = PairedImageDataset(
+    #     cfg["paths"]["train_input"],
+    #     cfg["paths"]["train_gt"],
+    #     image_size=dcfg["image_size"],
+    #     random_crop=dcfg.get("random_crop", True),
+    #     random_flip=dcfg.get("random_flip", True),
+    #     resize_only=False,
+    # )
+    #
+    # # ✅ Val：直接 resize（不 crop）
+    # val_random_crop = bool(dcfg.get("val_random_crop", False))
+    # val_ds = PairedImageDataset(
+    #     cfg["paths"]["val_input"],
+    #     cfg["paths"]["val_gt"],
+    #     image_size=dcfg["image_size"],
+    #     random_crop=val_random_crop,
+    #     random_flip=False,
+    #     resize_only=not val_random_crop,
+    # )
+    train_ds = DataReader(
+        img_dir="/public/home/hnust15874739861/pro/publicdata/LSUI19/Train",
+        input="input",
+        target="GT",
+        mode="train",
+        img_options={"h": 256, "w": 256},
+        aug=True,
     )
 
-    # ✅ Val：直接 resize（不 crop）
-    val_random_crop = bool(dcfg.get("val_random_crop", False))
-    val_ds = PairedImageDataset(
-        cfg["paths"]["val_input"],
-        cfg["paths"]["val_gt"],
-        image_size=dcfg["image_size"],
-        random_crop=val_random_crop,
-        random_flip=False,
-        resize_only=not val_random_crop,
+    val_ds = DataReader(
+        img_dir="/public/home/hnust15874739861/pro/publicdata/LSUI19/Val",
+        input="input",
+        target="GT",
+        mode="val",
+        img_options={"h": 256, "w": 256},
+        aug=False,
     )
 
     tcfg = cfg["training"]
@@ -564,7 +582,13 @@ def main():
             val_psnr = metrics["val_psnr"]
             val_ssim = metrics["val_ssim"]
 
-            log_line = f"Epoch {epoch}: val_loss={val_loss:.6f}, val_psnr={val_psnr:.4f}, val_ssim={val_ssim:.4f}\n"
+            log_line = (
+                f"Epoch {epoch}: "
+                f"train_loss={train_loss_epoch:.6f}, "
+                f"val_loss={val_loss:.6f}, "
+                f"val_psnr={val_psnr:.4f}, "
+                f"val_ssim={val_ssim:.4f}\n"
+            )
             print(log_line.strip())
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(log_line)

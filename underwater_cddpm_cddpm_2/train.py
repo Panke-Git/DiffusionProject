@@ -318,7 +318,7 @@ def main():
             global_step += 1
             running_loss += loss.item()
             pbar.set_postfix(loss=loss.item(), avg=running_loss / max(1, (global_step)))
-
+        train_loss_epoch = float(running_loss / max(1, global_step))
         # ===== Validation =====
         vcfg = cfg["validation"]
         interval_epochs = int(vcfg.get("interval_epochs", 1))
@@ -336,7 +336,13 @@ def main():
             val_psnr = metrics["val_psnr"]
             val_ssim = metrics["val_ssim"]
 
-            log_line = f"Epoch {epoch}: val_loss={val_loss:.6f}, val_psnr={val_psnr:.4f}, val_ssim={val_ssim:.4f}\n"
+            log_line = (
+                f"Epoch {epoch}: "
+                f"train_loss={train_loss_epoch:.6f}, "
+                f"val_loss={val_loss:.6f}, "
+                f"val_psnr={val_psnr:.4f}, "
+                f"val_ssim={val_ssim:.4f}\n"
+            )
             print(log_line.strip())
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(log_line)
