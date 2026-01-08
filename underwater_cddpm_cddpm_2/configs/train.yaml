@@ -42,7 +42,7 @@ diffusion:
 # ========== Training ==========
 training:
   epochs: 200
-  batch_size: 32
+  batch_size: 16
   lr: 2.0e-4
   weight_decay: 0.0
   grad_clip: 1.0
@@ -59,7 +59,7 @@ validation:
   interval_epochs: 1
   # How many val images to compute PSNR/SSIM on by sampling.
   # -1 means use all val images (can be slow).
-  num_samples: 50
+  num_samples: -1
 
   # Sampler for metrics (ddim is much faster than full ddpm):
   sampler: ddim           # ddpm | ddim
