@@ -1,6 +1,0 @@
-torch
-torchvision
-Pillow
-numpy
-tqdm
-pyyaml
