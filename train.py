@@ -12,7 +12,8 @@ import numpy as np
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config', type=str, default=r'/public/home/hnust15874739861/pro/DiffWater/config/config.yml',
+    parser.add_argument('-c', '--config', type=str,
+                        default=r'/public/home/hnust15874739861/pro/DiffWater/config/config.yml',
                         help='yml file for configuration')
     parser.add_argument('-p', '--phase', type=str, help='Run train(training)', default='train')
     parser.add_argument('-gpu', '--gpu_ids', type=str, default=None)
@@ -41,6 +42,7 @@ if __name__ == "__main__":
     # Initialize WandbLogger
     if opt['enable_wandb']:
         import wandb
+
         wandb_logger = WandbLogger(opt)
         wandb.define_metric('validation/val_step')
         wandb.define_metric('epoch')
@@ -61,13 +63,14 @@ if __name__ == "__main__":
                 val_set, dataset_opt, phase)
     logger.info('Initial Dataset Finished')
 
-    # model
+    # model 创建Model
     diffusion = Model.create_model(opt)
     logger.info('Initial Model Finished')
 
     # Train
     current_step = diffusion.begin_step
     current_epoch = diffusion.begin_epoch
+    logger.info("current_step:{}".format(current_step), "\n", "current_epoch:{}".format(current_epoch))
     n_iter = opt['train']['n_iter']
 
     if opt['path']['resume_state']:
@@ -107,7 +110,7 @@ if __name__ == "__main__":
                     os.makedirs(result_path, exist_ok=True)
 
                     diffusion.set_new_noise_schedule(opt['model']['beta_schedule']['val'], schedule_phase='val')
-                    for _,  val_data in enumerate(val_loader):
+                    for _, val_data in enumerate(val_loader):
                         idx += 1
                         diffusion.feed_data(val_data)
                         diffusion.test(continous=False)
@@ -122,7 +125,7 @@ if __name__ == "__main__":
                         Metrics.save_img(input_img, '{}/{}_{}_input.png'.format(result_path, current_step, idx))
                         tb_logger.add_image(
                             'Iter_{}'.format(current_step),
-                            np.transpose(np.concatenate((input_img, restore_img, target_img), axis=1), [2, 0, 1]),idx)
+                            np.transpose(np.concatenate((input_img, restore_img, target_img), axis=1), [2, 0, 1]), idx)
                         avg_psnr += Metrics.calculate_psnr(restore_img, target_img)
 
                         if wandb_logger:
@@ -143,7 +146,7 @@ if __name__ == "__main__":
                     tb_logger.add_scalar('psnr', avg_psnr, current_step)
 
                     if wandb_logger:
-                        wandb_logger.log_metrics({'validation/val_psnr': avg_psnr,'validation/val_step': val_step})
+                        wandb_logger.log_metrics({'validation/val_psnr': avg_psnr, 'validation/val_step': val_step})
                         val_step += 1
 
                 if current_step % opt['train']['save_checkpoint_freq'] == 0:
@@ -154,10 +157,9 @@ if __name__ == "__main__":
                         wandb_logger.log_checkpoint(current_epoch, current_step)
 
             if wandb_logger:
-                wandb_logger.log_metrics({'epoch': current_epoch-1})
+                wandb_logger.log_metrics({'epoch': current_epoch - 1})
 
         # save model
         logger.info('End of training.')
     else:
         raise NotImplementedError('phase should be the train phase')
-

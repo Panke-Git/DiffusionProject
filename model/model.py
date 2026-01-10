@@ -12,6 +12,7 @@ class DDPM(BaseModel):
     def __init__(self, opt):
         super(DDPM, self).__init__(opt)
         # define network and load pretrained models
+        # self.netG是一个module对象，其中包含了Unet还有GaussianDiffusion
         self.netG = self.set_device(networks.define_G(opt))
         self.schedule_phase = None
 
@@ -45,6 +46,7 @@ class DDPM(BaseModel):
         self.data = self.set_device(data)
 
     def optimize_parameters(self):
+        """优化参数"""
         self.optG.zero_grad()
         l_pix = self.netG(self.data)
         # need to average in multi-gpu
@@ -130,6 +132,7 @@ class DDPM(BaseModel):
             'Saved model in [{:s}] ...'.format(gen_path))
 
     def load_network(self):
+        """相当于是加载断点的时候用呢"""
         load_path = self.opt['path']['resume_state']
         if load_path is not None:
             logger.info(
