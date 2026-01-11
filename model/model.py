@@ -153,3 +153,34 @@ class DDPM(BaseModel):
                 self.optG.load_state_dict(opt['optimizer'])
                 self.begin_step = opt['iter']
                 self.begin_epoch = opt['epoch']
+
+    def save_best_network(self, tag, epoch, iter_step):
+        """Save best checkpoints to opt['path']['best'].
+
+        Files will be: best_{tag}_gen.pth and best_{tag}_opt.pth
+        Compatible with:
+            resume_state = <...>/best/best_{tag}
+        """
+        best_dir = self.opt['path'].get('best', os.path.join(self.opt['path']['experiments_root'], 'best'))
+        os.makedirs(best_dir, exist_ok=True)
+
+        gen_path = os.path.join(best_dir, 'best_{}_gen.pth'.format(tag))
+        opt_path = os.path.join(best_dir, 'best_{}_opt.pth'.format(tag))
+
+        # gen
+        network = self.netG
+        if isinstance(self.netG, nn.DataParallel):
+            network = network.module
+        state_dict = network.state_dict()
+        for key, param in state_dict.items():
+            state_dict[key] = param.cpu()
+        torch.save(state_dict, gen_path)
+
+        # opt
+        opt_state = {'epoch': epoch, 'iter': iter_step, 'scheduler': None, 'optimizer': None}
+        if hasattr(self, 'optG'):
+            opt_state['optimizer'] = self.optG.state_dict()
+        torch.save(opt_state, opt_path)
+
+        logger.info('Saved best({}) model in [{:s}] ...'.format(tag, gen_path))
+

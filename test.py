@@ -12,7 +12,7 @@ import os
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config', type=str, default='config/config.yml',
+    parser.add_argument('-c', '--config', type=str, default='config/config.yaml',
                         help='JSON file for configuration')
     parser.add_argument('-p', '--phase', type=str, choices=['val'], help='val(generation)', default='val')
     parser.add_argument('-gpu', '--gpu_ids', type=str, default=None)

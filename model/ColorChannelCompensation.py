@@ -2,6 +2,13 @@ from skimage.color import rgb2lab, rgb2gray, lab2rgb
 import numpy as np
 import cv2
 
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message=r"Conversion from CIE-LAB, via XYZ to sRGB color space.*",
+    category=UserWarning
+)
+
 def three_c(img_rgb):
     #img_rgb = img_rgb.astype(np.float) / 255.0
 

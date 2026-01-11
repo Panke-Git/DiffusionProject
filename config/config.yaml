@@ -1,11 +1,12 @@
 name: "LSUI"
-gpu_ids: [1]
+gpu_ids: [0]
 
 path:
     log: "logs"
     tb_logger: "tb_logger"
     results: "results"
     checkpoint: "checkpoint"
+    best: "best"
     resume_state: #experiments/UIEB_230803_200446/checkpoint/I860000_E607 #
 
 datasets:
@@ -58,7 +59,7 @@ diffusion:
     conditional: true
 
 train:
-    n_iter: 1000000
+    n_iter: 100000
     val_freq: 10000 #1e4
     save_checkpoint_freq: 10000 #1e4
     print_freq: 100

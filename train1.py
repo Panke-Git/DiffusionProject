@@ -80,6 +80,10 @@ if __name__ == "__main__":
     diffusion.set_new_noise_schedule(
         opt['model']['beta_schedule'][opt['phase']], schedule_phase=opt['phase'])
     if opt['phase'] == 'train':
+        best_loss = float('inf')
+        best_psnr = -1.0
+        best_ssim = -1.0
+        os.makedirs(opt['path'].get('best', os.path.join(opt['path']['experiments_root'], 'best')), exist_ok=True)
         while current_step < n_iter:
             current_epoch += 1
             for _, train_data in enumerate(train_loader):
@@ -105,6 +109,8 @@ if __name__ == "__main__":
                 # validation
                 if current_step % opt['train']['val_freq'] == 0:
                     avg_psnr = 0.0
+                    avg_loss = 0.0
+                    avg_ssim = 0.0
                     idx = 0
                     result_path = '{}/{}'.format(opt['path']['results'], current_epoch)
                     os.makedirs(result_path, exist_ok=True)
@@ -113,6 +119,12 @@ if __name__ == "__main__":
                     for _, val_data in enumerate(val_loader):
                         idx += 1
                         diffusion.feed_data(val_data)
+                        diffusion.netG.eval()
+                        with torch.no_grad():
+                            l_pix = diffusion.netG(diffusion.data)
+                            b, c, h, w = diffusion.data['target'].shape
+                            l_pix = l_pix.sum()/int(b*c*h*w)
+                        avg_loss += l_pix.item()
                         diffusion.test(continous=False)
                         visuals = diffusion.get_current_visuals()
                         restore_img = Metrics.tensor2img(visuals['output'])  # uint8
@@ -127,6 +139,9 @@ if __name__ == "__main__":
                             'Iter_{}'.format(current_step),
                             np.transpose(np.concatenate((input_img, restore_img, target_img), axis=1), [2, 0, 1]), idx)
                         avg_psnr += Metrics.calculate_psnr(restore_img, target_img)
+                        avg_ssim += Metrics.calculate_ssim(restore_img, target_img)
+
+
 
                         if wandb_logger:
                             wandb_logger.log_image(
@@ -135,19 +150,39 @@ if __name__ == "__main__":
                             )
 
                     avg_psnr = avg_psnr / idx
+                    avg_ssim = avg_ssim / idx
+                    avg_loss = avg_loss / idx
+
                     diffusion.set_new_noise_schedule(
                         opt['model']['beta_schedule']['train'], schedule_phase='train')
                     # log
-                    logger.info('# Validation # PSNR: {:.4e}'.format(avg_psnr))
+                    logger.info('# Validation # Loss:{:.4e} PSNR: {:.4e} SSIM:{:.4e}'.format(avg_loss, avg_psnr, avg_ssim))
                     logger_val = logging.getLogger('val')  # validation logger
-                    logger_val.info('<epoch:{:3d}, iter:{:8,d}> psnr: {:.4e}'.format(
-                        current_epoch, current_step, avg_psnr))
+                    logger_val.info('<epoch:{:3d}, iter:{:8,d}> loss: {:.4e} ssim: {:.4e} psnr: {:.4e}'.format(
+                        current_epoch, current_step, avg_loss, avg_ssim, avg_psnr))
                     # tensorboard logger
                     tb_logger.add_scalar('psnr', avg_psnr, current_step)
+                    tb_logger.add_scalar('ssim', avg_ssim, current_step)
+                    tb_logger.add_scalar('loss', avg_loss, current_step)
 
                     if wandb_logger:
-                        wandb_logger.log_metrics({'validation/val_psnr': avg_psnr, 'validation/val_step': val_step})
+                        wandb_logger.log_metrics({
+                            'validation_loss': avg_loss,
+                            'validation/val_psnr': avg_psnr,
+                            'validation/val_loss': avg_loss,
+                            'validation/val_step': val_step,
+                        })
                         val_step += 1
+
+                if avg_loss>best_loss:
+                    best_loss = avg_loss
+                    diffusion.save_network('loss', current_epoch, current_step)
+                if avg_psnr>best_psnr:
+                    best_psnr = avg_psnr
+                    diffusion.save_network('psnr', current_epoch, current_step)
+                if avg_ssim>best_ssim:
+                    best_ssim = avg_ssim
+                    diffusion.save_network('ssim', current_epoch, current_step)
 
                 if current_step % opt['train']['save_checkpoint_freq'] == 0:
                     logger.info('Saving models and training states.')
