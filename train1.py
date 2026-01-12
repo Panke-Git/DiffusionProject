@@ -7,6 +7,7 @@ import core.logger as Logger
 import core.metrics as Metrics
 from core.wandb_logger import WandbLogger
 from tensorboardX import SummaryWriter
+import json
 import os
 import numpy as np
 
@@ -80,6 +81,43 @@ if __name__ == "__main__":
     diffusion.set_new_noise_schedule(
         opt['model']['beta_schedule'][opt['phase']], schedule_phase=opt['phase'])
     if opt['phase'] == 'train':
+        # ---- best tracking & logging ----
+        best_dir = opt['path'].get('best', os.path.join(opt['path']['experiments_root'], 'best'))
+        os.makedirs(best_dir, exist_ok=True)
+
+        def _dump_json(path, obj):
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(obj, f, ensure_ascii=False, indent=2)
+
+        def save_best_metrics(tag, info_dict):
+            """
+            Save metrics for the current best_{tag}.
+            tag: 'loss' | 'psnr' | 'ssim'
+            """
+            # per-best file
+            _dump_json(os.path.join(best_dir, f'best_{tag}_metrics.json'), info_dict)
+
+            # summary file (always updated)
+            summary_path = os.path.join(best_dir, 'best_summary.json')
+            if os.path.exists(summary_path):
+                with open(summary_path, 'r', encoding='utf-8') as f:
+                    summary = json.load(f)
+            else:
+                summary = {}
+
+            summary[f'best_{tag}'] = info_dict
+            _dump_json(summary_path, summary)
+
+
+        # Track best values + where they happen
+        best_records = {
+            'loss': {'value': float('inf'), 'epoch': -1, 'iter': -1},
+            'psnr': {'value': -1.0, 'epoch': -1, 'iter': -1},
+            'ssim': {'value': -1.0, 'epoch': -1, 'iter': -1},
+        }
+        # Track train loss between validations (so we can store train_loss with each best)
+        train_loss_sum = 0.0
+        train_loss_count = 0
         best_loss = float('inf')
         best_psnr = -1.0
         best_ssim = -1.0
@@ -94,6 +132,12 @@ if __name__ == "__main__":
                     wandb_logger.log_metrics(len(train_data))
                 diffusion.feed_data(train_data)
                 diffusion.optimize_parameters()
+
+                # accumulate train loss for the upcoming validation
+                cur_logs = diffusion.get_current_log() if hasattr(diffusion, 'get_current_log') else diffusion.log_dict
+                if cur_logs is not None and 'l_pix' in cur_logs:
+                    train_loss_sum += float(cur_logs['l_pix'])
+                    train_loss_count += 1
                 # log
                 if current_step % opt['train']['print_freq'] == 0:
                     logs = diffusion.get_current_log()
@@ -108,6 +152,10 @@ if __name__ == "__main__":
 
                 # validation
                 if current_step % opt['train']['val_freq'] == 0:
+                    avg_train_loss = (train_loss_sum / max(1, train_loss_count))
+                    train_loss_sum = 0.0
+                    train_loss_count = 0
+
                     avg_psnr = 0.0
                     avg_loss = 0.0
                     avg_ssim = 0.0
@@ -116,6 +164,7 @@ if __name__ == "__main__":
                     os.makedirs(result_path, exist_ok=True)
 
                     diffusion.set_new_noise_schedule(opt['model']['beta_schedule']['val'], schedule_phase='val')
+
                     for _, val_data in enumerate(val_loader):
                         idx += 1
                         diffusion.feed_data(val_data)
@@ -161,10 +210,31 @@ if __name__ == "__main__":
                     logger_val.info('<epoch:{:3d}, iter:{:8,d}> loss: {:.4e} ssim: {:.4e} psnr: {:.4e}'.format(
                         current_epoch, current_step, avg_loss, avg_ssim, avg_psnr))
                     # tensorboard logger
-                    tb_logger.add_scalar('psnr', avg_psnr, current_step)
-                    tb_logger.add_scalar('ssim', avg_ssim, current_step)
-                    tb_logger.add_scalar('loss', avg_loss, current_step)
+                    tb_logger.add_scalar('train_loss: ', avg_train_loss, current_step)
+                    tb_logger.add_scalar('loss: ', avg_loss, current_step)
+                    tb_logger.add_scalar('psnr: ', avg_psnr, current_step)
+                    tb_logger.add_scalar('ssim: ', avg_ssim, current_step)
 
+                    info={
+                        'epoch': current_epoch,
+                        'iter': current_step,
+                        'train_loss': avg_train_loss,
+                        'val_loss': avg_loss,
+                        'psnr': avg_psnr,
+                        'ssim': avg_ssim,
+                    }
+                    if avg_loss < best_records['loss']['value']:
+                        best_records['loss']={'value': float(avg_loss), 'epoch': current_epoch, 'iter': current_step,}
+                        diffusion.save_best_network('loss', current_epoch, current_step)
+                        save_best_metrics('loss', info)
+                    if avg_psnr < best_records['psnr']['value']:
+                        best_records['psnr'] = {'value': float(avg_psnr), 'epoch': (current_epoch), 'iter': current_step,}
+                        diffusion.save_best_network('psnr', current_epoch, current_step)
+                        save_best_metrics('psnr', info)
+                    if avg_ssim < best_records['ssim']['value']:
+                        best_records['ssim']={'value':float(avg_ssim), 'epohc': current_epoch, 'iter':current_step}
+                        diffusion.save_best_network('ssim', current_epoch, current_step)
+                        save_best_metrics('ssim', info)
                     if wandb_logger:
                         wandb_logger.log_metrics({
                             'validation_loss': avg_loss,
@@ -193,7 +263,14 @@ if __name__ == "__main__":
 
             if wandb_logger:
                 wandb_logger.log_metrics({'epoch': current_epoch - 1})
-
+        logger.info('======Training Finished: Best Summary======')
+        logger.info('Best loss: {:.6e} @ epoch {} iter {}'.format(
+            best_records['loss']['value'], best_records['loss']['epoch'], best_records['loss']['iter']))
+        logger.info('Best psnr: {:.4f} @ epoch {} iter {}'.format(
+            best_records['psnr']['value'], best_records['psnr']['epoch'], best_records['psnr']['iter']))
+        logger.info('Best ssim: {:.4f} @ epoch {} iter {}'.format(
+            best_records['ssim']['value'],best_records['ssim']['epohc'], best_records['ssim']['iter'] ))
+        _dump_json(os.path.join(best_dir, 'best_records.json'), best_records)
         # save model
         logger.info('End of training.')
     else:
