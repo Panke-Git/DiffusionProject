@@ -10,6 +10,9 @@ warnings.filterwarnings(
 )
 
 def three_c(img_rgb):
+    """
+
+    """
     #img_rgb = img_rgb.astype(np.float) / 255.0
 
     img_lab = rgb2lab(img_rgb)

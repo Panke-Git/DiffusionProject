@@ -14,7 +14,7 @@ import numpy as np
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--config', type=str,
-                        default=r'/public/home/hnust15874739861/pro/DiffusionProject/config/config.yaml',
+                        default=r'/public/home/hnust15874739861/pro/DiffusionProject/config/config2.yaml',
                         help='yml file for configuration')
     parser.add_argument('-p', '--phase', type=str, help='Run train(training)', default='train')
     parser.add_argument('-gpu', '--gpu_ids', type=str, default=None)
@@ -121,6 +121,11 @@ if __name__ == "__main__":
         best_loss = float('inf')
         best_psnr = -1.0
         best_ssim = -1.0
+
+        avg_psnr = -10.0
+        avg_loss = -10.0
+        avg_ssim = -10.0
+
         os.makedirs(opt['path'].get('best', os.path.join(opt['path']['experiments_root'], 'best')), exist_ok=True)
         while current_step < n_iter:
             current_epoch += 1
@@ -156,9 +161,7 @@ if __name__ == "__main__":
                     train_loss_sum = 0.0
                     train_loss_count = 0
 
-                    avg_psnr = 0.0
-                    avg_loss = 0.0
-                    avg_ssim = 0.0
+
                     idx = 0
                     result_path = '{}/{}'.format(opt['path']['results'], current_epoch)
                     os.makedirs(result_path, exist_ok=True)
@@ -246,13 +249,13 @@ if __name__ == "__main__":
 
                 if avg_loss>best_loss:
                     best_loss = avg_loss
-                    diffusion.save_network('loss', current_epoch, current_step)
+                    diffusion.save_best_network('loss', current_epoch, current_step)
                 if avg_psnr>best_psnr:
                     best_psnr = avg_psnr
-                    diffusion.save_network('psnr', current_epoch, current_step)
+                    diffusion.save_best_network('psnr', current_epoch, current_step)
                 if avg_ssim>best_ssim:
                     best_ssim = avg_ssim
-                    diffusion.save_network('ssim', current_epoch, current_step)
+                    diffusion.save_best_network('ssim', current_epoch, current_step)
 
                 if current_step % opt['train']['save_checkpoint_freq'] == 0:
                     logger.info('Saving models and training states.')
