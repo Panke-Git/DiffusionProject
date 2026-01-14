@@ -161,7 +161,6 @@ if __name__ == "__main__":
                     train_loss_sum = 0.0
                     train_loss_count = 0
 
-
                     idx = 0
                     result_path = '{}/{}'.format(opt['path']['results'], current_epoch)
                     os.makedirs(result_path, exist_ok=True)
@@ -235,7 +234,7 @@ if __name__ == "__main__":
                         diffusion.save_best_network('psnr', current_epoch, current_step)
                         save_best_metrics('psnr', info)
                     if avg_ssim < best_records['ssim']['value']:
-                        best_records['ssim']={'value':float(avg_ssim), 'epohc': current_epoch, 'iter':current_step}
+                        best_records['ssim']={'value':float(avg_ssim), 'epoch': current_epoch, 'iter':current_step}
                         diffusion.save_best_network('ssim', current_epoch, current_step)
                         save_best_metrics('ssim', info)
                     if wandb_logger:
