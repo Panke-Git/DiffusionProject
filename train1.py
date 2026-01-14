@@ -71,7 +71,7 @@ if __name__ == "__main__":
     # Train
     current_step = diffusion.begin_step
     current_epoch = diffusion.begin_epoch
-    logger.info("current_step:{}".format(current_step), "\n", "current_epoch:{}".format(current_epoch))
+    logger.info("current_step:%s\ncurrent_epoch:%s", current_step, current_epoch)
     n_iter = opt['train']['n_iter']
 
     if opt['path']['resume_state']:
@@ -112,19 +112,13 @@ if __name__ == "__main__":
         # Track best values + where they happen
         best_records = {
             'loss': {'value': float('inf'), 'epoch': -1, 'iter': -1},
-            'psnr': {'value': -1.0, 'epoch': -1, 'iter': -1},
-            'ssim': {'value': -1.0, 'epoch': -1, 'iter': -1},
+            'psnr': {'value': float('-inf'), 'epoch': -1, 'iter': -1},
+            'ssim': {'value': float('-inf'), 'epoch': -1, 'iter': -1},
         }
         # Track train loss between validations (so we can store train_loss with each best)
         train_loss_sum = 0.0
         train_loss_count = 0
-        best_loss = float('inf')
-        best_psnr = -1.0
-        best_ssim = -1.0
 
-        avg_psnr = -10.0
-        avg_loss = -10.0
-        avg_ssim = -10.0
         os.makedirs(opt['path'].get('best', os.path.join(opt['path']['experiments_root'], 'best')), exist_ok=True)
         while current_step < n_iter:
             current_epoch += 1
@@ -159,10 +153,10 @@ if __name__ == "__main__":
                     avg_train_loss = (train_loss_sum / max(1, train_loss_count))
                     train_loss_sum = 0.0
                     train_loss_count = 0
-
-                    avg_psnr = 0.0
                     avg_loss = 0.0
+                    avg_psnr = 0.0
                     avg_ssim = 0.0
+
                     idx = 0
                     result_path = '{}/{}'.format(opt['path']['results'], current_epoch)
                     os.makedirs(result_path, exist_ok=True)
@@ -185,7 +179,7 @@ if __name__ == "__main__":
                         input_img = Metrics.tensor2img(visuals['input'])  # uint8
 
                         # generation
-                        Metrics.save_img(target_img, '{}/{}_{}_taget.png'.format(result_path, current_step, idx))
+                        Metrics.save_img(target_img, '{}/{}_{}_target.png'.format(result_path, current_step, idx))
                         Metrics.save_img(restore_img, '{}/{}_{}_output.png'.format(result_path, current_step, idx))
                         Metrics.save_img(input_img, '{}/{}_{}_input.png'.format(result_path, current_step, idx))
                         tb_logger.add_image(
@@ -231,12 +225,12 @@ if __name__ == "__main__":
                         best_records['loss']={'value': float(avg_loss), 'epoch': current_epoch, 'iter': current_step,}
                         diffusion.save_best_network('loss', current_epoch, current_step)
                         save_best_metrics('loss', info)
-                    if avg_psnr < best_records['psnr']['value']:
+                    if avg_psnr > best_records['psnr']['value']:
                         best_records['psnr'] = {'value': float(avg_psnr), 'epoch': (current_epoch), 'iter': current_step,}
                         diffusion.save_best_network('psnr', current_epoch, current_step)
                         save_best_metrics('psnr', info)
-                    if avg_ssim < best_records['ssim']['value']:
-                        best_records['ssim']={'value':float(avg_ssim), 'epohc': current_epoch, 'iter':current_step}
+                    if avg_ssim > best_records['ssim']['value']:
+                        best_records['ssim']={'value':float(avg_ssim), 'epoch': current_epoch, 'iter':current_step}
                         diffusion.save_best_network('ssim', current_epoch, current_step)
                         save_best_metrics('ssim', info)
                     if wandb_logger:
@@ -247,16 +241,6 @@ if __name__ == "__main__":
                             'validation/val_step': val_step,
                         })
                         val_step += 1
-
-                if avg_loss>best_loss:
-                    best_loss = avg_loss
-                    diffusion.save_best_network('loss', current_epoch, current_step)
-                if avg_psnr>best_psnr:
-                    best_psnr = avg_psnr
-                    diffusion.save_best_network('psnr', current_epoch, current_step)
-                if avg_ssim>best_ssim:
-                    best_ssim = avg_ssim
-                    diffusion.save_best_network('ssim', current_epoch, current_step)
 
                 if current_step % opt['train']['save_checkpoint_freq'] == 0:
                     logger.info('Saving models and training states.')
@@ -273,7 +257,7 @@ if __name__ == "__main__":
         logger.info('Best psnr: {:.4f} @ epoch {} iter {}'.format(
             best_records['psnr']['value'], best_records['psnr']['epoch'], best_records['psnr']['iter']))
         logger.info('Best ssim: {:.4f} @ epoch {} iter {}'.format(
-            best_records['ssim']['value'],best_records['ssim']['epohc'], best_records['ssim']['iter'] ))
+            best_records['ssim']['value'],best_records['ssim']['epoch'], best_records['ssim']['iter'] ))
         _dump_json(os.path.join(best_dir, 'best_records.json'), best_records)
         # save model
         logger.info('End of training.')

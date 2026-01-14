@@ -12,15 +12,15 @@ path:
 datasets:
     train:
         name: "LSUI"
-        dataroot: "/public/home/hnust15874739861/pro/publicdata/LSUI19/Train"
+        dataroot: "E:\\PythonProject\\01_Personal\\UnderwaterImageEnhanced\\dataset\\LSUI19\\Train"
         resolution: 256
-        batch_size: 16
-        num_workers: 8
+        batch_size: 4
+        num_workers: 4
         use_shuffle: true
         data_len: -1
     val:
         name: "LSUI"
-        dataroot: "/public/home/hnust15874739861/pro/publicdata/LSUI19/Val"
+        dataroot: "E:\\PythonProject\\01_Personal\\UnderwaterImageEnhanced\\dataset\\LSUI19\\Val"
         resolution: 256
         use_shuffle: true
         data_len: -1
@@ -60,7 +60,7 @@ diffusion:
 
 train:
     n_iter: 100000
-    val_freq: 1000 #1e4
+    val_freq: 100 #1e4
     save_checkpoint_freq: 1000 #1e4
     print_freq: 100
     optimizer:

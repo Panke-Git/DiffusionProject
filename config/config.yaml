@@ -15,7 +15,7 @@ datasets:
         dataroot: "/public/home/hnust15874739861/pro/publicdata/LSUI19/Train"
         resolution: 256
         batch_size: 16
-        num_workers: 8
+        num_workers: 6
         use_shuffle: true
         data_len: -1
     val:
@@ -60,12 +60,12 @@ diffusion:
 
 train:
     n_iter: 100000
-    val_freq: 10000 #1e4
-    save_checkpoint_freq: 10000 #1e4
+    val_freq: 1000 #1e4
+    save_checkpoint_freq: 1000 #1e4
     print_freq: 100
     optimizer:
         type: "adam"
-        lr: 0.000003 #3e-6
+        lr: 0.000005 #5e-6
     ema_scheduler:
         step_start_ema: 5000
         update_ema_every: 1
