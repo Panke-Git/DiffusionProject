@@ -3,6 +3,7 @@ import numpy as np
 import cv2
 
 import warnings
+
 warnings.filterwarnings(
     "ignore",
     message=r"Conversion from CIE-LAB, via XYZ to sRGB color space.*",
