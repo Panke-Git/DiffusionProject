@@ -10,6 +10,36 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from PIL import Image
+from PIL.ImageFilter import GaussianBlur
+
+
+def batch_gaussian_blur_pil(x: torch.Tensor, radius: float) -> torch.Tensor:
+    """
+    用 PIL.ImageFilter.GaussianBlur 对 batch tensor 做高斯模糊。
+    x: (B,3,H,W), float, 值域期望 [0,1]
+    return: (B,3,H,W), float, [0,1]，在 CPU 上做完再搬回原 device
+    """
+    assert x.dim() == 4 and x.size(1) == 3, f"Expect (B,3,H,W), got {x.shape}"
+    device = x.device
+    dtype = x.dtype
+
+    x_cpu = x.detach().float().clamp(0, 1).cpu()  # PIL 只能 CPU + 不可微
+    B, C, H, W = x_cpu.shape
+    outs = []
+
+    for i in range(B):
+        img = x_cpu[i].permute(1, 2, 0).numpy()          # HWC, float
+        img_u8 = (img * 255.0 + 0.5).astype(np.uint8)    # uint8
+        pil = Image.fromarray(img_u8, mode="RGB")
+        pil_blur = pil.filter(GaussianBlur(radius=radius))
+
+        arr = np.asarray(pil_blur).astype(np.float32) / 255.0  # HWC float [0,1]
+        ten = torch.from_numpy(arr).permute(2, 0, 1)           # CHW
+        outs.append(ten)
+
+    out = torch.stack(outs, dim=0).to(device=device, dtype=dtype)
+    return out
 
 
 # =========================
