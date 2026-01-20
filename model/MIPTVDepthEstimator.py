@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from model.get_A_utils import get_A
 
 # =========================
 # Utils (from DocDiff, minimal)
@@ -367,3 +367,34 @@ class MIPTVDepthEstimator(nn.Module):
             u = u_new
 
         return u.clamp(0.0, 1.0)
+
+
+
+class Block1_MIPTV(nn.Module):
+    def __init__(
+        self,
+        input_channels,
+        output_channels,
+        n_channels,
+        ch_mults,
+        n_blocks,
+        eps=1e-6,
+    ):
+        super(Block1_MIPTV, self).__init__()
+        self.beta_predictor = Beta_UNet(3, 3, n_channels, ch_mults, n_blocks)
+        self.depth_estimator = MIPTVDepthEstimator()
+        self.eps = float(eps)
+        self.block1 = Block1_MIPTV(3, 3, 32, [1, 2, 3, 4], 1)
+
+    def forward(self, condition):
+        pred_beta = self.beta_predictor(condition)
+        depth = self.depth_estimator(condition)  # (B,1,H,W)
+        depth = (depth - depth.min()) / (depth.max() - depth.min() + self.eps)
+        T_direct = torch.clamp((torch.exp(-pred_beta * depth)), 0, 1)
+        T_scatter = torch.clamp((1 - torch.exp(-pred_beta * depth)), 0, 1)
+        atm_light = [get_A(item) for item in condition]
+        atm_light = torch.stack(atm_light).to(condition.device)
+        J = torch.clamp(((condition - T_scatter * atm_light) / T_direct), 0, 1)
+        return J
+
+

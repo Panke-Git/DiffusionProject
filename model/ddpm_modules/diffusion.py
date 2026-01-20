@@ -6,6 +6,7 @@ from inspect import isfunction
 from functools import partial
 import numpy as np
 from tqdm import tqdm
+from model.MIPTVDepthEstimator import Block1_MIPTV
 
 
 def _warmup_beta(linear_start, linear_end, n_timestep, warmup_frac):
@@ -94,6 +95,7 @@ class GaussianDiffusion(nn.Module):
         if schedule_opt is not None:
             pass
             # self.set_new_noise_schedule(schedule_opt)
+
 
     def set_loss(self, device):
         if self.loss_type == 'l1':
@@ -252,6 +254,7 @@ class GaussianDiffusion(nn.Module):
 
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
+
 
         if not self.conditional:
             x_recon = self.denoise_fn(x_noisy, t)
