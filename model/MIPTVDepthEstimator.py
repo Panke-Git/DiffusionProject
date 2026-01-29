@@ -12,30 +12,59 @@ import torch.nn as nn
 import torch.nn.functional as F
 from model.get_A_utils import get_A
 
-# =========================
-# Utils (from DocDiff, minimal)
-# =========================
-def get_pad(in_, ksize, stride, atrous=1):
-    """
-    Compute padding for "same" output size style conv when using dilation.
-    This is kept from your DocDiff.py because MiddleBlock uses it.
-    """
-    out_ = np.ceil(float(in_) / float(stride))
-    pad = int(((out_ - 1) * stride + atrous * (ksize - 1) + 1 - in_) / 2)
-    return pad
-
+import numpy as np
+import torch
+from torch import nn
+import math
 
 class Swish(nn.Module):
-    """Swish activation: x * sigmoid(x)"""
+    """
+    ### Swish actiavation function
+    $$x \cdot \sigma(x)$$
+    """
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x):
         return x * torch.sigmoid(x)
+
+
+class TimeEmbedding(nn.Module):
+    """
+    ### Embeddings for $t$
+    """
+
+    def __init__(self, n_channels: int):
+        """
+        * `n_channels` is the number of dimensions in the embedding
+        """
+        super().__init__()
+        self.n_channels = n_channels
+        # First linear layer
+        self.lin1 = nn.Linear(self.n_channels // 4, self.n_channels)
+        # Activation
+        self.act = Swish()
+        # Second linear layer
+        self.lin2 = nn.Linear(self.n_channels, self.n_channels)
+
+    def forward(self, t: torch.Tensor):
+        half_dim = self.n_channels // 8
+        emb = math.log(10_000) / (half_dim - 1)
+        emb = torch.exp(torch.arange(half_dim, device=t.device) * -emb)
+        emb = t[:, None] * emb[None, :]
+        emb = torch.cat((emb.sin(), emb.cos()), dim=1)
+
+        # Transform with the MLP
+        emb = self.act(self.lin1(emb))
+        emb = self.lin2(emb)
+
+        #
+        return emb
 
 
 class ResidualBlock(nn.Module):
     """
-    Minimal residual block used by Beta_UNet.
-    Note: Beta_UNet uses is_noise=False, so time embedding branch is disabled.
+    ### Residual block
+    A residual block has two convolution layers with group normalization.
+    Each resolution is processed with two residual blocks.
     """
 
     def __init__(
@@ -46,42 +75,64 @@ class ResidualBlock(nn.Module):
         dropout: float = 0.1,
         is_noise: bool = True,
     ):
+        """
+        * `in_channels` is the number of input channels
+        * `out_channels` is the number of input channels
+        * `time_channels` is the number channels in the time step ($t$) embeddings
+        * `n_groups` is the number of groups for [group normalization](../../normalization/group_norm/index.html)
+        * `dropout` is the dropout rate
+        """
         super().__init__()
+        # Group normalization and the first convolution layer
         self.is_noise = is_noise
-
         self.act1 = Swish()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-
-        self.act2 = Swish()
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
-
-        self.shortcut = (
-            nn.Conv2d(in_channels, out_channels, kernel_size=1)
-            if in_channels != out_channels
-            else nn.Identity()
+        self.conv1 = nn.Conv2d(
+            in_channels, out_channels, kernel_size=(3, 3), padding=(1, 1)
         )
 
+        # Group normalization and the second convolution layer
+
+        self.act2 = Swish()
+        self.conv2 = nn.Conv2d(
+            out_channels, out_channels, kernel_size=(3, 3), padding=(1, 1)
+        )
+
+        # If the number of input channels is not equal to the number of output channels we have to
+        # project the shortcut connection
+        if in_channels != out_channels:
+            self.shortcut = nn.Conv2d(in_channels, out_channels, kernel_size=(1, 1))
+        else:
+            self.shortcut = nn.Identity()
+
+        # Linear layer for time embeddings
         if self.is_noise:
             self.time_emb = nn.Linear(time_channels, out_channels)
             self.time_act = Swish()
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor | None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, t: torch.Tensor):
+        """
+        * `x` has shape `[batch_size, in_channels, height, width]`
+        * `t` has shape `[batch_size, time_channels]`
+        """
+        # First convolution layer
         h = self.conv1(self.act1(x))
-
-        # Only used when is_noise=True
+        # Add time embeddings
         if self.is_noise:
-            if t is None:
-                raise ValueError("t must be provided when is_noise=True")
-            h = h + self.time_emb(self.time_act(t))[:, :, None, None]
-
+            h += self.time_emb(self.time_act(t))[:, :, None, None]
+        # Second convolution layer
         h = self.conv2(self.dropout(self.act2(h)))
+
+        # Add the shortcut connection and return
         return h + self.shortcut(x)
 
 
 class DownBlock(nn.Module):
-    """Down block = ResidualBlock (attention removed in your Beta_UNet path)."""
+    """
+    ### Down block
+    This combines `ResidualBlock` and `AttentionBlock`. These are used in the first half of U-Net at each resolution.
+    """
 
     def __init__(
         self,
@@ -95,26 +146,41 @@ class DownBlock(nn.Module):
             in_channels, out_channels, time_channels, is_noise=is_noise
         )
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor | None) -> torch.Tensor:
-        return self.res(x, t)
+    def forward(self, x: torch.Tensor, t: torch.Tensor):
+        x = self.res(x, t)
+        return x
 
 
-class Downsample(nn.Module):
-    """Downsample by 2 using stride-2 conv."""
+class UpBlock(nn.Module):
+    """
+    ### Up block
+    This combines `ResidualBlock` and `AttentionBlock`. These are used in the second half of U-Net at each resolution.
+    """
 
-    def __init__(self, n_channels: int):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        time_channels: int,
+        is_noise: bool = True,
+    ):
         super().__init__()
-        self.conv = nn.Conv2d(n_channels, n_channels, kernel_size=3, stride=2, padding=1)
+        # The input has `in_channels + out_channels` because we concatenate the output of the same resolution
+        # from the first half of the U-Net
+        self.res = ResidualBlock(
+            in_channels + out_channels, out_channels, time_channels, is_noise=is_noise
+        )
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor | None) -> torch.Tensor:
-        _ = t  # kept for signature compatibility
-        return self.conv(x)
+    def forward(self, x: torch.Tensor, t: torch.Tensor):
+        x = self.res(x, t)
+        return x
 
 
 class MiddleBlock(nn.Module):
     """
-    Middle block used by Beta_UNet:
-    ResidualBlock + several dilated convs + ResidualBlock
+    ### Middle block
+    It combines a `ResidualBlock`, `AttentionBlock`, followed by another `ResidualBlock`.
+    This block is applied at the lowest resolution of the U-Net.
     """
 
     def __init__(self, n_channels: int, time_channels: int, is_noise: bool = True):
@@ -122,7 +188,6 @@ class MiddleBlock(nn.Module):
         self.res1 = ResidualBlock(
             n_channels, n_channels, time_channels, is_noise=is_noise
         )
-        # keep exactly as your DocDiff.py style
         self.dia1 = nn.Conv2d(
             n_channels, n_channels, 3, 1, dilation=2, padding=get_pad(16, 3, 1, 2)
         )
@@ -139,7 +204,7 @@ class MiddleBlock(nn.Module):
             n_channels, n_channels, time_channels, is_noise=is_noise
         )
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor | None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, t: torch.Tensor):
         x = self.res1(x, t)
         x = self.dia1(x)
         x = self.dia2(x)
@@ -149,73 +214,293 @@ class MiddleBlock(nn.Module):
         return x
 
 
-# =========================
-# Beta_UNet (minimal kept)
-# =========================
-class Beta_UNet(nn.Module):
+class Upsample(nn.Module):
     """
-    Predict beta parameters from condition image.
+    ### Scale up the feature map by $2 \times$
+    """
 
-    Input : (B, input_channels, H, W)  typically input_channels=3
-    Output: (B, output_channels, 1, 1) typically output_channels=3
+    def __init__(self, n_channels):
+        super().__init__()
+        self.conv = nn.ConvTranspose2d(n_channels, n_channels, (4, 4), (2, 2), (1, 1))
+
+    def forward(self, x: torch.Tensor, t: torch.Tensor):
+        # `t` is not used, but it's kept in the arguments because for the attention layer function signature
+        # to match with `ResidualBlock`.
+        _ = t
+        return self.conv(x)
+
+
+class Downsample(nn.Module):
+    """
+    ### Scale down the feature map by $\frac{1}{2} \times$
+    """
+
+    def __init__(self, n_channels):
+        super().__init__()
+        self.conv = nn.Conv2d(n_channels, n_channels, (3, 3), (2, 2), (1, 1))
+
+    def forward(self, x: torch.Tensor, t: torch.Tensor):
+        # `t` is not used, but it's kept in the arguments because for the attention layer function signature
+        # to match with `ResidualBlock`.
+        _ = t
+        return self.conv(x)
+
+
+class Denoise_UNet(nn.Module):
+    """
+    ## U-Net
     """
 
     def __init__(
-        self,
-        input_channels: int,
-        output_channels: int,
-        n_channels: int,
-        ch_mults: list[int],
-        n_blocks: int,
+        self, input_channels, output_channels, n_channels, ch_mults, n_blocks, is_noise
     ):
+        """
+        * `image_channels` is the number of channels in the image. $3$ for RGB.
+        * `n_channels` is number of channels in the initial feature map that we transform the image into
+        * `ch_mults` is the list of channel numbers at each resolution. The number of channels is `ch_mults[i] * n_channels`
+        * `is_attn` is a list of booleans that indicate whether to use attention at each resolution
+        * `n_blocks` is the number of `UpDownBlocks` at each resolution
+        """
         super().__init__()
-        is_noise = False  # as in your DocDiff.py
 
+        # Number of resolutions
         n_resolutions = len(ch_mults)
 
+        # Project image into feature map
         self.image_proj = nn.Conv2d(
-            input_channels, n_channels, kernel_size=3, padding=1
+            input_channels, n_channels, kernel_size=(3, 3), padding=(1, 1)
         )
 
-        down = []
-        out_channels = in_channels = n_channels
+        # Time embedding layer. Time embedding has `n_channels * 4` channels
+        self.is_noise = is_noise
+        if is_noise:
+            self.time_emb = TimeEmbedding(n_channels * 4)
 
+        # #### First half of U-Net - decreasing resolution
+        down = []
+        # Number of channels
+        out_channels = in_channels = n_channels
+        # For each resolution
         for i in range(n_resolutions):
+            # Number of output channels at this resolution
             out_channels = n_channels * ch_mults[i]
+            # Add `n_blocks`
             for _ in range(n_blocks):
                 down.append(
                     DownBlock(
-                        in_channels, out_channels, time_channels=n_channels * 4, is_noise=is_noise
+                        in_channels, out_channels, n_channels * 4, is_noise=is_noise
                     )
                 )
                 in_channels = out_channels
-
+            # Down sample at all resolutions except the last
             if i < n_resolutions - 1:
                 down.append(Downsample(in_channels))
 
+        # Combine the set of modules
         self.down = nn.ModuleList(down)
 
-        self.middle = MiddleBlock(out_channels, time_channels=n_channels * 4, is_noise=False)
-        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        # Middle block
+        self.middle = MiddleBlock(out_channels, n_channels * 4, is_noise=False)
 
-        # IMPORTANT: adapt to actual out_channels (original code was nn.Linear(128,3))
-        self.transform = nn.Sequential(
-            nn.Linear(out_channels, output_channels),
-            Swish(),
-            nn.Linear(output_channels, output_channels),
+        # #### Second half of U-Net - increasing resolution
+        up = []
+        # Number of channels
+        in_channels = out_channels
+        # For each resolution
+        for i in reversed(range(n_resolutions)):
+            # `n_blocks` at the same resolution
+            out_channels = n_channels * ch_mults[i]
+            for _ in range(n_blocks):
+                up.append(
+                    UpBlock(
+                        in_channels, out_channels, n_channels * 4, is_noise=is_noise
+                    )
+                )
+            # Final block to reduce the number of channels
+            in_channels = n_channels * (ch_mults[i - 1] if i >= 1 else 1)
+            up.append(
+                UpBlock(in_channels, out_channels, n_channels * 4, is_noise=is_noise)
+            )
+            in_channels = out_channels
+            # Up sample at all resolutions except last
+            if i > 0:
+                up.append(Upsample(in_channels))
+
+        # Combine the set of modules
+        self.up = nn.ModuleList(up)
+
+        self.act = Swish()
+        self.final = nn.Conv2d(
+            in_channels, output_channels, kernel_size=(3, 3), padding=(1, 1)
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        t = None
+    def forward(self, x: torch.Tensor, t: torch.Tensor = torch.tensor([0]).cuda()):
+        """
+        * `x` has shape `[batch_size, in_channels, height, width]`
+        * `t` has shape `[batch_size]`
+        """
+
+        # Get time-step embeddings
+        if self.is_noise:
+            t = self.time_emb(t)
+        else:
+            t = None
+        # Get image projection
         x = self.image_proj(x)
 
+        # `h` will store outputs at each resolution for skip connection
+        h = [x]
+        # First half of U-Net
         for m in self.down:
             x = m(x, t)
+            h.append(x)
 
+        # Middle (bottom)
         x = self.middle(x, t)
-        x = self.pool(x).squeeze(-1).squeeze(-1)       # (B, C)
-        x = torch.sigmoid(self.transform(x))           # (B, output_channels) in (0,1)
-        return x.unsqueeze(-1).unsqueeze(-1)           # (B, output_channels, 1, 1)
+
+        # Second half of U-Net
+        for m in self.up:
+            if isinstance(m, Upsample):
+                x = m(x, t)
+            else:
+                # Get the skip connection from first half of U-Net and concatenate
+                s = h.pop()
+                # print(x.shape, s.shape)
+                x = torch.cat((x, s), dim=1)
+                #
+                x = m(x, t)
+
+        # Final normalization and convolution
+        return self.final(self.act(x))
+
+
+class Beta_UNet(nn.Module):
+    def __init__(self, input_channels, output_channels, n_channels, ch_mults, n_blocks):
+        super().__init__()
+        is_noise = False
+        # Number of resolutions
+        n_resolutions = len(ch_mults)
+
+        # Project image into feature map
+        self.image_proj = nn.Conv2d(
+            input_channels, n_channels, kernel_size=(3, 3), padding=(1, 1)
+        )
+
+        # #### First half of U-Net - decreasing resolution
+        down = []
+        # Number of channels
+        out_channels = in_channels = n_channels
+        # For each resolution
+        for i in range(n_resolutions):
+            # Number of output channels at this resolution
+            out_channels = n_channels * ch_mults[i]
+            # Add `n_blocks`
+            for _ in range(n_blocks):
+                down.append(
+                    DownBlock(
+                        in_channels, out_channels, n_channels * 4, is_noise=is_noise
+                    )
+                )
+                in_channels = out_channels
+            # Down sample at all resolutions except the last
+            if i < n_resolutions - 1:
+                down.append(Downsample(in_channels))
+        # Combine the set of modules
+        self.down = nn.ModuleList(down)
+
+        # Middle block
+        self.middle = MiddleBlock(out_channels, n_channels * 4, is_noise=False)
+        self.act = Swish()
+
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+
+        self.transform = nn.Sequential(nn.Linear(128, 3), Swish(), nn.Linear(3, 3))
+
+    def forward(self, x: torch.Tensor):
+        t = None
+        x = self.image_proj(x)
+        h = [x]
+        for m in self.down:
+            x = m(x, t)
+            h.append(x)
+        x = self.middle(x, t)
+        x = torch.sigmoid(self.transform(self.pool(x).squeeze()))
+        return x.unsqueeze(-1).unsqueeze(-1)
+
+
+class DocDiff(nn.Module):
+    def __init__(
+        self,
+        input_channels,
+        output_channels,
+        n_channels,
+        ch_mults,
+        n_blocks,
+    ):
+        super(DocDiff, self).__init__()
+        self.beta_predictor = Beta_UNet(3, 3, n_channels, ch_mults, n_blocks)
+        self.denoiser = Denoise_UNet(
+            12, 3, n_channels, ch_mults, n_blocks, is_noise=True
+        )
+
+    def forward(self, x, condition, hist, depth, t, diffusion):
+        pred_beta = self.beta_predictor(condition)
+        depth = (depth - depth.min()) / (depth.max() - depth.min())
+        T_direct = torch.clamp((torch.exp(-pred_beta * depth)), 0, 1)
+        T_scatter = torch.clamp((1 - torch.exp(-pred_beta * depth)), 0, 1)
+        atm_light = [get_A(item) for item in condition]
+        atm_light = torch.stack(atm_light).to(x.device)
+        J = torch.clamp(((condition - T_scatter * atm_light) / T_direct), 0, 1)
+
+        noisy_image, noise_ref = diffusion.noisy_image(t, x)
+        denoised_J = self.denoiser(
+            torch.cat((noisy_image, condition.clone().detach(), J, hist), dim=1), t
+        )
+        return J, noise_ref, denoised_J, T_direct, T_scatter
+
+class DocPriorWithMIPTV(nn.Module):
+    """
+    物理先验模块（从 DocDiff 提取改造）：
+      输入: x, condition (可选 t，但这里不使用)
+      输出: J，保证 [B,3,256,256]
+    """
+
+    def __init__(self, n_channels, ch_mults, n_blocks,
+                 force_size=256, eps=1e-6,
+                 depth_kwargs=None):
+        super().__init__()
+        self.beta_predictor = Beta_UNet(3, 3, n_channels, ch_mults, n_blocks)
+        self.depth_estimator = MIPTVDepthEstimator(**(depth_kwargs or {}))
+        self.force_size = force_size
+        self.eps = eps
+
+    def forward(self, x, condition, t=None):
+        # # 1) 强制输入变成 256×256（如果你上游保证就是 256，可改成 assert 更干净）
+        # if self.force_size is not None:
+        #     target = (self.force_size, self.force_size)
+        #     if x.shape[-2:] != target:
+        #         x = F.interpolate(x, size=target, mode="bilinear", align_corners=False)
+        #     if condition.shape[-2:] != target:
+        #         condition = F.interpolate(condition, size=target, mode="bilinear", align_corners=False)
+
+        # 2) beta（每通道一个标量）：[B,3,1,1]
+        pred_beta = self.beta_predictor(condition)
+
+
+        depth = self.depth_estimator(condition)
+
+        T_direct = torch.clamp(torch.exp(-pred_beta * depth), 0.0, 1.0)
+        T_scatter = torch.clamp(1.0 - torch.exp(-pred_beta * depth), 0.0, 1.0)
+
+        atm_light = torch.stack([get_A(item) for item in condition]).to(condition.device)
+
+        J = (condition - T_scatter * atm_light) / (T_direct + self.eps)
+        J = torch.clamp(J, 0.0, 1.0)
+        return J
+
+def get_pad(in_, ksize, stride, atrous=1):
+    out_ = np.ceil(float(in_) / stride)
+    return int(((out_ - 1) * stride + atrous * (ksize - 1) + 1 - in_) / 2)
 
 
 # =========================
