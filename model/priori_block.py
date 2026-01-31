@@ -6,7 +6,11 @@
     @Email: None
 """
 
-from MIPTVDepthEstimator import *
+from MIPTVDepthEstimator import Beta_UNet, MIPTVDepthEstimator
+import torch
+import torch.nn as nn
+from get_A_utils import get_A
+import torch.nn.functional as F
 
 class Block1_MIPTV(nn.Module):
     """
@@ -30,7 +34,6 @@ class Block1_MIPTV(nn.Module):
     def forward(self, condition):
         pred_beta = self.beta_predictor(condition)
         depth = self.depth_estimator(condition)  # (B,1,H,W)
-        depth = (depth - depth.min()) / (depth.max() - depth.min() + self.eps)
         T_direct = torch.clamp((torch.exp(-pred_beta * depth)), 0, 1)
         T_scatter = torch.clamp((1 - torch.exp(-pred_beta * depth)), 0, 1)
         atm_light = [get_A(item) for item in condition]
@@ -53,14 +56,7 @@ class Block2_MIPTV(nn.Module):
         self.force_size = force_size
         self.eps = eps
 
-    def forward(self, x, condition, t=None):
-        # 1) 强制输入变成 256×256（如果你上游保证就是 256，可改成 assert 更干净）
-        # if self.force_size is not None:
-            # target = (self.force_size, self.force_size)
-            # if x.shape[-2:] != target:
-            #     x = F.interpolate(x, size=target, mode="bilinear", align_corners=False)
-            # if condition.shape[-2:] != target:
-            #     condition = F.interpolate(condition, size=target, mode="bilinear", align_corners=False)
+    def forward(self, condition, t=None):
 
         # 2) beta（每通道一个标量）：[B,3,1,1]
         pred_beta = self.beta_predictor(condition)

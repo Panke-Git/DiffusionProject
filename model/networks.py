@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from torch.nn import init
 from torch.nn import modules
+from model.priori_block import Block1_MIPTV
 logger = logging.getLogger('base')
 ####################
 # initialize
@@ -96,13 +97,20 @@ def define_G(opt):
         dropout=model_opt['unet']['dropout'],
         image_size=model_opt['diffusion']['image_size']
     )
+    prior = Block1_MIPTV(
+        n_channels=32,
+        ch_mults=[1,2,3,4],
+        n_blocks=1,
+    )
     netG = diffusion.GaussianDiffusion(
         model,
         image_size=model_opt['diffusion']['image_size'],
         channels=model_opt['diffusion']['channels'],
         loss_type='l1',    # L1 or L2
         conditional=model_opt['diffusion']['conditional'],
-        schedule_opt=model_opt['beta_schedule']['train']
+        schedule_opt=model_opt['beta_schedule']['train'],
+        prior=prior,
+        prior_trainable=False,
     )
     if opt['phase'] == 'train':
         # init_weights(netG, init_type='kaiming', scale=0.1)
