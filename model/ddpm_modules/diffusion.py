@@ -6,7 +6,6 @@ from inspect import isfunction
 from functools import partial
 import numpy as np
 from tqdm import tqdm
-from model.MIPTVDepthEstimator import Block1_MIPTV
 
 
 def _warmup_beta(linear_start, linear_end, n_timestep, warmup_frac):

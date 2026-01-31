@@ -20,6 +20,6 @@ net = net.to(device).eval()
 
 x = torch.randn(32, 3, 256, 256, device=device)
 with torch.no_grad():
-    y = net(x, x)
+    y = net(x)
 
 print("output shape:", y.shape)
