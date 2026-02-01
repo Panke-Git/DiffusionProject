@@ -6,10 +6,10 @@
     @Email: None
 """
 
-from MIPTVDepthEstimator import Beta_UNet, MIPTVDepthEstimator
+from model.MIPTVDepthEstimator import Beta_UNet, MIPTVDepthEstimator
 import torch
 import torch.nn as nn
-from get_A_utils import get_A
+from model.get_A_utils import get_A
 import torch.nn.functional as F
 
 class Block1_MIPTV(nn.Module):
@@ -18,8 +18,8 @@ class Block1_MIPTV(nn.Module):
     """
     def __init__(
         self,
-        input_channels,
-        output_channels,
+        # input_channels,
+        # output_channels,
         n_channels,
         ch_mults,
         n_blocks,
@@ -32,6 +32,7 @@ class Block1_MIPTV(nn.Module):
         # self.block1 = Block1_MIPTV(3, 3, 32, [1, 2, 3, 4], 1)
 
     def forward(self, condition):
+        condition = condition.float()
         pred_beta = self.beta_predictor(condition)
         depth = self.depth_estimator(condition)  # (B,1,H,W)
         T_direct = torch.clamp((torch.exp(-pred_beta * depth)), 0, 1)
@@ -39,6 +40,7 @@ class Block1_MIPTV(nn.Module):
         atm_light = [get_A(item) for item in condition]
         atm_light = torch.stack(atm_light).to(condition.device)
         J = torch.clamp(((condition - T_scatter * atm_light) / T_direct), 0, 1)
+        print(J.shape)
         return J
 
 
@@ -76,6 +78,5 @@ class Block2_MIPTV(nn.Module):
         # 6) 反演得到 J（加 eps 避免除 0）
         J = (condition - T_scatter * atm_light) / (T_direct + self.eps)
         J = torch.clamp(J, 0.0, 1.0)
-
         # 输出保证 [B,3,256,256]
         return J

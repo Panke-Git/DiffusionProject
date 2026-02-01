@@ -100,7 +100,7 @@ def define_G(opt):
     prior = Block1_MIPTV(
         n_channels=32,
         ch_mults=[1,2,3,4],
-        n_blocks=1,
+        n_blocks=1
     )
     netG = diffusion.GaussianDiffusion(
         model,
