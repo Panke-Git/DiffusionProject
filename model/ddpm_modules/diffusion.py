@@ -83,9 +83,7 @@ class GaussianDiffusion(nn.Module):
         channels=3,
         loss_type='l1',
         conditional=True,
-        schedule_opt=None,
-        prior=None,
-        prior_trainable = False,
+        schedule_opt=None
     ):
         super().__init__()
         self.channels = channels
@@ -93,26 +91,9 @@ class GaussianDiffusion(nn.Module):
         self.denoise_fn = denoise_fn
         self.conditional = conditional
         self.loss_type = loss_type
-        self.prior = prior
-        self.prior_trainable = prior_trainable
         if schedule_opt is not None:
             pass
             # self.set_new_noise_schedule(schedule_opt)
-
-    def _run_prior(self, cond):
-        if self.prior is None:
-            return cond
-
-        cond01 = (cond + 1) / 2
-        if not self.prior_trainable:
-            self.prior.eval()
-            with torch.no_grad():
-                J01 = self.prior(cond01)
-        else:
-            J01 = self.prior(cond01)
-        J = J01 * 2 -1
-        return J
-
 
     def set_loss(self, device):
         if self.loss_type == 'l1':
@@ -233,11 +214,11 @@ class GaussianDiffusion(nn.Module):
                     ret_img = torch.cat([ret_img, img], dim=0)
             return img
         else:
-            x = self._run_prior(x_in)
+            x = x_in
             shape = x.shape
             b = shape[0]
             img = torch.randn(shape, device=device)
-            ret_img = x_in
+            ret_img = x
             for i in tqdm(reversed(range(0, self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
                 img = self.p_sample(img, torch.full(
                     (b,), i, device=device, dtype=torch.long), condition_x=x)
@@ -272,12 +253,11 @@ class GaussianDiffusion(nn.Module):
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
 
-
         if not self.conditional:
             x_recon = self.denoise_fn(x_noisy, t)
         else:
-            cond = self._run_prior(x_in['input'])  # 3ch
-            x_recon = self.denoise_fn(torch.cat([cond, x_noisy], dim=1), t)  # 6ch
+            x_recon = self.denoise_fn(
+                torch.cat([x_in['input'], x_noisy], dim=1), t)
         loss = self.loss_func(noise, x_recon)
 
         return loss

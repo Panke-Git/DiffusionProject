@@ -40,7 +40,6 @@ class Block1_MIPTV(nn.Module):
         atm_light = [get_A(item) for item in condition]
         atm_light = torch.stack(atm_light).to(condition.device)
         J = torch.clamp(((condition - T_scatter * atm_light) / T_direct), 0, 1)
-        print(J.shape)
         return J
 
 

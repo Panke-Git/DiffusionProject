@@ -1,18 +1,14 @@
-"""
-    @Project: MIPTVDepthEstimator.py
-    @Author: Panke
-    @FileName: networks.py
-    @Time: 2026/2/9 01:11
-    @Email: None
-"""
-
 import functools
 import logging
 import torch
 import torch.nn as nn
 from torch.nn import init
 from torch.nn import modules
+from model.priori_block import Block1_MIPTV
+from model.DocDiff import *
+
 logger = logging.getLogger('base')
+
 ####################
 # initialize
 ####################
@@ -104,13 +100,18 @@ def define_G(opt):
         dropout=model_opt['unet']['dropout'],
         image_size=model_opt['diffusion']['image_size']
     )
-    netG = diffusion.GaussianDiffusion(
+
+    prior = DocDiff6Adapter().cuda()
+
+    netG = GaussianDiffusionWithDocDiffPrior(
         model,
         image_size=model_opt['diffusion']['image_size'],
         channels=model_opt['diffusion']['channels'],
         loss_type='l1',    # L1 or L2
         conditional=model_opt['diffusion']['conditional'],
-        schedule_opt=model_opt['beta_schedule']['train']
+        schedule_opt=model_opt['beta_schedule']['train'],
+        prior=prior,
+        prior_trainable=False,
     )
     if opt['phase'] == 'train':
         # init_weights(netG, init_type='kaiming', scale=0.1)
@@ -120,5 +121,3 @@ def define_G(opt):
         assert torch.cuda.is_available()
         netG = nn.DataParallel(netG)
     return netG
-
-

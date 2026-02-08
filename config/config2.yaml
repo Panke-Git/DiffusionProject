@@ -1,4 +1,4 @@
-name: "LSUI"
+name: "SeaDiff_BaseLine"
 gpu_ids: [0]
 
 path:
@@ -59,9 +59,9 @@ diffusion:
     conditional: true
 
 train:
-    n_iter: 500000
+    n_iter: 200000
     val_freq: 1000 #1e4
-    save_checkpoint_freq: 1000 #1e4
+    save_checkpoint_freq: 10000 #1e4
     print_freq: 100
     optimizer:
         type: "adam"
