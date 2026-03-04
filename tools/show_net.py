@@ -7,19 +7,29 @@
     @Email: None
 """
 
-
+from model.ddpm_modules.unet import UNet
 import torch
-from model.MIPTVDepthEstimator import Block1_MIPTV
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-print("Block1_MIPTV =", Block1_MIPTV)
-print("type(Block1_MIPTV) =", type(Block1_MIPTV))
-net = Block1_MIPTV(3, 3, 32, [1,2,3,4], 1)
-net = net.to(device).eval()
+if __name__ == "__main__":
+    # 创建模型
+    model = UNet(
+        in_channel=6,
+        out_channel=3,
+        inner_channel=32,
+        image_size=256
+    )
 
-x = torch.randn(32, 3, 256, 256, device=device)
-with torch.no_grad():
-    y = net(x)
+    # 打印网络结构
+    print(model)
 
-print("output shape:", y.shape)
+    # 构造输入
+    x = torch.randn(1, 6, 128, 128)   # batch=1, 6通道, 128x128
+    t = torch.randint(0, 1000, (1,))  # diffusion timestep
+
+    # 前向传播
+    out = model(x, t)
+
+    # 打印输入输出shape
+    print("input shape:", x.shape)
+    print("output shape:", out.shape)

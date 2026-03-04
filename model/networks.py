@@ -90,10 +90,10 @@ def init_weights(net, init_type='kaiming', scale=1, std=0.02):
 # Generator
 def define_G(opt):
     model_opt = opt['model']
-    from .ddpm_modules import diffusion, unet
+    from .ddpm_modules import diffusion, unet_V1
     if ('norm_groups' not in model_opt['unet']) or model_opt['unet']['norm_groups'] is None:
         model_opt['unet']['norm_groups']=32
-    model = unet.UNet(
+    model = unet_V1.UNet(
         in_channel=model_opt['unet']['in_channel'],
         out_channel=model_opt['unet']['out_channel'],
         norm_groups=model_opt['unet']['norm_groups'],
