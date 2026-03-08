@@ -1,4 +1,4 @@
-name: "BaseLine"
+name: "neck+UAS4StatsAttnBlock"
 gpu_ids: [0]
 
 path:
