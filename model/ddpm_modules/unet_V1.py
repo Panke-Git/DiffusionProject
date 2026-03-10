@@ -200,7 +200,7 @@ class UNet(nn.Module):
 
         self.mid_uas = UAS4StatsAttnBlock(
             channels=pre_channel,
-            time_embed_dim=time_dim,  # ✅ 你有 time embedding 就传；如果不想用就改 None
+            time_embed_dim=time_dim,
             reduced_channels=max(8, pre_channel // 4),  # 可选
         )
 
