@@ -176,7 +176,7 @@ if __name__ == "__main__":
                         visuals = diffusion.get_current_visuals()
                         restore_img = Metrics.tensor2img(visuals['output'])  # uint8
                         target_img = Metrics.tensor2img(visuals['target'])  # uint8
-                        input_img = Metrics.tensor2img(visuals['input'])  # uint8
+                        input_img = Metrics.tensor2img(visuals['input'])[:, :, :3]  # 只取RGB
 
                         # generation
                         Metrics.save_img(target_img, '{}/{}_{}_target.png'.format(result_path, current_step, idx))
@@ -187,8 +187,6 @@ if __name__ == "__main__":
                             np.transpose(np.concatenate((input_img, restore_img, target_img), axis=1), [2, 0, 1]), idx)
                         avg_psnr += Metrics.calculate_psnr(restore_img, target_img)
                         avg_ssim += Metrics.calculate_ssim(restore_img, target_img)
-
-
 
                         if wandb_logger:
                             wandb_logger.log_image(
