@@ -1,14 +1,18 @@
+"""
+    @Project: MIPTVDepthEstimator.py
+    @Author: Panke
+    @FileName: networks.py
+    @Time: 2026/2/9 01:11
+    @Email: None
+"""
+
 import functools
 import logging
 import torch
 import torch.nn as nn
 from torch.nn import init
 from torch.nn import modules
-from model.priori_block import Block1_MIPTV
-from model.DocDiff import *
-
 logger = logging.getLogger('base')
-
 ####################
 # initialize
 ####################
@@ -86,10 +90,10 @@ def init_weights(net, init_type='kaiming', scale=1, std=0.02):
 # Generator
 def define_G(opt):
     model_opt = opt['model']
-    from .ddpm_modules import diffusion, unet
+    from .ddpm_modules import diffusionV1, unetV1
     if ('norm_groups' not in model_opt['unet']) or model_opt['unet']['norm_groups'] is None:
         model_opt['unet']['norm_groups']=32
-    model = unet.UNet(
+    model = unetV1.UNet(
         in_channel=model_opt['unet']['in_channel'],
         out_channel=model_opt['unet']['out_channel'],
         norm_groups=model_opt['unet']['norm_groups'],
@@ -100,18 +104,13 @@ def define_G(opt):
         dropout=model_opt['unet']['dropout'],
         image_size=model_opt['diffusion']['image_size']
     )
-
-    prior = DocDiff6Adapter().cuda()
-
-    netG = GaussianDiffusionWithDocDiffPrior(
+    netG = diffusionV1.GaussianDiffusion(
         model,
         image_size=model_opt['diffusion']['image_size'],
         channels=model_opt['diffusion']['channels'],
         loss_type='l1',    # L1 or L2
         conditional=model_opt['diffusion']['conditional'],
-        schedule_opt=model_opt['beta_schedule']['train'],
-        prior=prior,
-        prior_trainable=False,
+        schedule_opt=model_opt['beta_schedule']['train']
     )
     if opt['phase'] == 'train':
         # init_weights(netG, init_type='kaiming', scale=0.1)
@@ -121,3 +120,5 @@ def define_G(opt):
         assert torch.cuda.is_available()
         netG = nn.DataParallel(netG)
     return netG
+
+

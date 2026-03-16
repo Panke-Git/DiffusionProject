@@ -3,7 +3,7 @@ from collections import OrderedDict
 import torch
 import torch.nn as nn
 import os
-import model.networks_1V1 as networks
+import model.networksV1 as networks
 from .base_model import BaseModel
 logger = logging.getLogger('base')
 

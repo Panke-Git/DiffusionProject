@@ -1,4 +1,4 @@
-name: "SeaDiff_BaseLine"
+name: "Unet_UAS4A"
 gpu_ids: [0]
 
 path:
@@ -26,7 +26,7 @@ datasets:
         data_len: -1
 model:
     unet:
-        in_channel: 6
+        in_channel: 7
         out_channel: 3
         inner_channel: 64
         norm_groups: 16
@@ -61,11 +61,11 @@ diffusion:
 train:
     n_iter: 200000
     val_freq: 1000 #1e4
-    save_checkpoint_freq: 10000 #1e4
+    save_checkpoint_freq: 1000 #1e4
     print_freq: 100
     optimizer:
         type: "adam"
-        lr: 0.000003 #3e-6
+        lr: 0.000005 #5e-6
     ema_scheduler:
         step_start_ema: 5000
         update_ema_every: 1
