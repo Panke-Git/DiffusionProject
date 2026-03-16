@@ -65,7 +65,7 @@ if __name__ == "__main__":
     logger.info('Initial Dataset Finished')
 
     # model 创建Model
-    diffusion = Model.create_model_1V1(opt)
+    diffusion = Model.create_modelV1(opt)
     logger.info('Initial Model Finished')
 
     # Train

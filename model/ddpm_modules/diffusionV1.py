@@ -200,45 +200,34 @@ class GaussianDiffusion(nn.Module):
     @torch.no_grad()
     def p_sample_loop(self, x_in, continous=False):
         device = self.betas.device
-        sample_inter = (1 | (self.num_timesteps // 10))
+        sample_inter = (1 | (self.num_timesteps//10))
 
         if not self.conditional:
             shape = x_in
             b = shape[0]
             img = torch.randn(shape, device=device)
             ret_img = img
-            for i in tqdm(reversed(range(0, self.num_timesteps)), desc='sampling loop time step',
-                          total=self.num_timesteps):
-                img = self.p_sample(
-                    img,
-                    torch.full((b,), i, device=device, dtype=torch.long)
-                )
+            for i in tqdm(reversed(range(0, self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
+                img = self.p_sample(img, torch.full(
+                    (b,), i, device=device, dtype=torch.long))
                 if i % sample_inter == 0:
                     ret_img = torch.cat([ret_img, img], dim=0)
             return img
         else:
             x = x_in
-            b, _, h, w = x.shape
-
-            img = torch.randn((b, self.channels, h, w), device=device)
-
-            # 不要用 x 初始化 ret_img，因为 x 是4通道，img是3通道
-            ret_img = img
-
-            for i in tqdm(reversed(range(0, self.num_timesteps)), desc='sampling loop time step',
-                          total=self.num_timesteps):
-                img = self.p_sample(
-                    img,
-                    torch.full((b,), i, device=device, dtype=torch.long),
-                    condition_x=x
-                )
+            shape = x.shape
+            b = shape[0]
+            img = torch.randn(shape, device=device)
+            ret_img = x
+            for i in tqdm(reversed(range(0, self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
+                img = self.p_sample(img, torch.full(
+                    (b,), i, device=device, dtype=torch.long), condition_x=x)
                 if i % sample_inter == 0:
                     ret_img = torch.cat([ret_img, img], dim=0)
-
         if continous:
             return ret_img
         else:
-            return img
+            return ret_img[-1]
 
     @torch.no_grad()
     def restore(self, x_in, continous=False):

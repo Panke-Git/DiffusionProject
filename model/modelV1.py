@@ -3,7 +3,7 @@ from collections import OrderedDict
 import torch
 import torch.nn as nn
 import os
-import model.networksV1 as networks
+import model.networksV1 as networksV1
 from .base_model import BaseModel
 logger = logging.getLogger('base')
 
@@ -13,7 +13,7 @@ class DDPM(BaseModel):
         super(DDPM, self).__init__(opt)
         # define network and load pretrained models
         # self.netG是一个module对象，其中包含了Unet还有GaussianDiffusion
-        self.netG = self.set_device(networks.define_G(opt))
+        self.netG = self.set_device(networksV1.define_G(opt))
         self.schedule_phase = None
 
         # set loss and load resume state

@@ -8,7 +8,7 @@ def create_model(opt):
     logger.info('Model [{:s}] is created.'.format(m.__class__.__name__))
     return m
 
-def create_model_1V1(opt):
+def create_modelV1(opt):
     from .modelV1 import DDPM as M
     m = M(opt)
     logger.info('Model [{:s}] is created.'.format(m.__class__.__name__))
