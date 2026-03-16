@@ -1,4 +1,4 @@
-name: "Unet_ADMM"
+name: "Unet_ADMMV2"
 gpu_ids: [0]
 
 path:
@@ -26,7 +26,7 @@ datasets:
         data_len: -1
 model:
     unet:
-        in_channel: 7
+        in_channel: 6
         out_channel: 3
         inner_channel: 64
         norm_groups: 16
