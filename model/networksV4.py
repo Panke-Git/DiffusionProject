@@ -90,10 +90,10 @@ def init_weights(net, init_type='kaiming', scale=1, std=0.02):
 # Generator
 def define_G(opt):
     model_opt = opt['model']
-    from .ddpm_modules import diffusionV3, unetV3
+    from .ddpm_modules import diffusionV4, unetV4
     if ('norm_groups' not in model_opt['unet']) or model_opt['unet']['norm_groups'] is None:
         model_opt['unet']['norm_groups']=32
-    model = unetV3.UNet(
+    model = unetV4.UNet(
         in_channel=model_opt['unet']['in_channel'],
         out_channel=model_opt['unet']['out_channel'],
         norm_groups=model_opt['unet']['norm_groups'],
@@ -104,7 +104,7 @@ def define_G(opt):
         dropout=model_opt['unet']['dropout'],
         image_size=model_opt['diffusion']['image_size']
     )
-    netG = diffusionV3.GaussianDiffusion(
+    netG = diffusionV4.GaussianDiffusion(
         model,
         image_size=model_opt['diffusion']['image_size'],
         channels=model_opt['diffusion']['channels'],
