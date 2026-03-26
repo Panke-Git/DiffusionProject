@@ -32,3 +32,29 @@ def create_dataset(dataset_opt, phase):
     logger.info('Dataset [{:s} - {:s}] is created.'.format(dataset.__class__.__name__,
                                                            dataset_opt['name']))
     return dataset
+
+def create_dataset_admm(dataset_opt, phase):
+    '''create dataset'''
+    from data.dataset_admm import UIEDataset as D
+    dataset = D(dataroot=dataset_opt['dataroot'],
+                resolution=dataset_opt['resolution'],
+                split=phase,
+                data_len=dataset_opt['data_len'],
+                )
+    logger = logging.getLogger('base')
+    logger.info('Dataset [{:s} - {:s}] is created.'.format(dataset.__class__.__name__,
+                                                           dataset_opt['name']))
+    return dataset
+
+def create_dataset_admmV2(dataset_opt, phase):
+    '''create dataset'''
+    from data.dataset_admmV2 import UIEDataset as D
+    dataset = D(dataroot=dataset_opt['dataroot'],
+                resolution=dataset_opt['resolution'],
+                split=phase,
+                data_len=dataset_opt['data_len'],
+                )
+    logger = logging.getLogger('base')
+    logger.info('Dataset [{:s} - {:s}] is created.'.format(dataset.__class__.__name__,
+                                                           dataset_opt['name']))
+    return dataset
