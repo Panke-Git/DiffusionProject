@@ -25,6 +25,34 @@ if __name__ == "__main__":
 
     # 解析配置文件
     args = parser.parse_args()
+
+    def seed_everything(seed=42):
+        import os
+        import random
+        import numpy as np
+        import torch
+
+        random.seed(seed)
+        np.random.seed(seed)
+        os.environ['PYTHONHASHSEED'] = str(seed)
+
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+        # 保证卷积算法确定性
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+        # PyTorch 2.x 强制确定性
+        torch.use_deterministic_algorithms(True)
+
+        # CUDA 12.x（你在用）
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
+
+
+    seed_everything(42)
+
     opt = Logger.parse(args)
     # Convert to NoneDict, which return None for missing key.
     opt = Logger.dict_to_nonedict(opt)
