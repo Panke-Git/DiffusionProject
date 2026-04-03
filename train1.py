@@ -29,7 +29,6 @@ if __name__ == "__main__":
     def seed_everything(seed=42):
         import os
         import random
-        import numpy as np
         import torch
 
         random.seed(seed)

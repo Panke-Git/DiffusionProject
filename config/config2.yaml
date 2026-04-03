@@ -1,4 +1,4 @@
-name: "UNet_ADMM_V4"
+name: "Baseline_UAS4"
 gpu_ids: [0]
 
 path:

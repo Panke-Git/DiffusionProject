@@ -29,7 +29,6 @@ if __name__ == "__main__":
     def seed_everything(seed=42):
         import os
         import random
-        import numpy as np
         import torch
 
         random.seed(seed)
@@ -83,17 +82,17 @@ if __name__ == "__main__":
     # dataset dataloader
     for phase, dataset_opt in opt['datasets'].items():
         if phase == 'train' and args.phase != 'val':
-            train_set = Data.create_dataset(dataset_opt, phase)
+            train_set = Data.create_datasetV1(dataset_opt, phase)
             train_loader = Data.create_dataloader(
                 train_set, dataset_opt, phase)
         elif phase == 'val':
-            val_set = Data.create_dataset(dataset_opt, phase)
+            val_set = Data.create_datasetV1(dataset_opt, phase)
             val_loader = Data.create_dataloader(
                 val_set, dataset_opt, phase)
     logger.info('Initial Dataset Finished')
 
     # model 创建Model
-    diffusion = Model.create_modelV4(opt)
+    diffusion = Model.create_modelV1(opt)
     logger.info('Initial Model Finished')
 
     # Train

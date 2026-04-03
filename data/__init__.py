@@ -34,8 +34,22 @@ def create_dataset(dataset_opt, phase):
     return dataset
 
 
-def create_dataset_admm(dataset_opt, phase):
+def create_datasetV1(dataset_opt, phase):
     '''create dataset'''
+    from data.dataset import UIEDataset as D
+    dataset = D(dataroot=dataset_opt['dataroot'],
+                resolution=dataset_opt['resolution'],
+                split=phase,
+                data_len=dataset_opt['data_len'],
+                )
+    logger = logging.getLogger('base')
+    logger.info('Dataset [{:s} - {:s}] is created.'.format(dataset.__class__.__name__,
+                                                           dataset_opt['name']))
+    return dataset
+
+
+def create_dataset_admm(dataset_opt, phase):
+    '''加了Dataset_admm的dataset'''
     from data.dataset_admm import UIEDataset as D
     dataset = D(dataroot=dataset_opt['dataroot'],
                 resolution=dataset_opt['resolution'],
@@ -49,7 +63,7 @@ def create_dataset_admm(dataset_opt, phase):
 
 
 def create_dataset_admmV2(dataset_opt, phase):
-    '''create dataset'''
+    '''V2的dataset'''
     from data.dataset_admmV2 import UIEDataset as D
     dataset = D(dataroot=dataset_opt['dataroot'],
                 resolution=dataset_opt['resolution'],
