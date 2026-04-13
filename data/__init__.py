@@ -35,7 +35,7 @@ def create_dataset(dataset_opt, phase):
 
 
 def create_datasetV1(dataset_opt, phase):
-    '''create dataset'''
+    ''''''
     from data.dataset import UIEDataset as D
     dataset = D(dataroot=dataset_opt['dataroot'],
                 resolution=dataset_opt['resolution'],

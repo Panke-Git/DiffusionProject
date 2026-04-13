@@ -1,5 +1,10 @@
 ```json
 {
+  "V1": {
+    "name": "Baseline_UAS4",
+    "note": "基线+UAS4",
+    "相关文件": "NULL"
+  },
   "V3": {
     "name": "UNet_UAS4_ADMM_V3",
     "note": "UAS4+深度自适应正则化",
