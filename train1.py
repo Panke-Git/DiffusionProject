@@ -203,7 +203,7 @@ if __name__ == "__main__":
                         visuals = diffusion.get_current_visuals()
                         restore_img = Metrics.tensor2img(visuals['output'])  # uint8
                         target_img = Metrics.tensor2img(visuals['target'])  # uint8
-                        input_img = Metrics.tensor2img(visuals['input'])[:, :, :3]  # 只取RGB
+                        input_img = Metrics.tensor2img(visuals['input'])  # uint8
 
                         # generation
                         Metrics.save_img(target_img, '{}/{}_{}_target.png'.format(result_path, current_step, idx))
