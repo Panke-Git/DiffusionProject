@@ -1,4 +1,4 @@
-name: "Baseline"
+name: "Baseline_SEED"
 gpu_ids: [0]
 
 path:

@@ -26,29 +26,29 @@ if __name__ == "__main__":
     # 解析配置文件
     args = parser.parse_args()
 
-    # def seed_everything(seed=42):
-    #     import os
-    #     import random
-    #     import torch
-    #
-    #     random.seed(seed)
-    #     np.random.seed(seed)
-    #     os.environ['PYTHONHASHSEED'] = str(seed)
-    #
-    #     torch.manual_seed(seed)
-    #     torch.cuda.manual_seed(seed)
-    #     torch.cuda.manual_seed_all(seed)
-    #
-    #     # 保证卷积算法确定性
-    #     torch.backends.cudnn.deterministic = True
-    #     torch.backends.cudnn.benchmark = False
-    #
-    #     # PyTorch 2.x 强制确定性
-    #     torch.use_deterministic_algorithms(True)
-    #
-    #     # CUDA 12.x（你在用）
-    #     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
-    # seed_everything(42)
+    def seed_everything(seed=42):
+        import os
+        import random
+        import torch
+
+        random.seed(seed)
+        np.random.seed(seed)
+        os.environ['PYTHONHASHSEED'] = str(seed)
+
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+        # 保证卷积算法确定性
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+        # PyTorch 2.x 强制确定性
+        torch.use_deterministic_algorithms(True)
+
+        # CUDA 12.x（你在用）
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
+    seed_everything(42)
 
     opt = Logger.parse(args)
     # Convert to NoneDict, which return None for missing key.
@@ -212,8 +212,6 @@ if __name__ == "__main__":
                             np.transpose(np.concatenate((input_img, restore_img, target_img), axis=1), [2, 0, 1]), idx)
                         avg_psnr += Metrics.calculate_psnr(restore_img, target_img)
                         avg_ssim += Metrics.calculate_ssim(restore_img, target_img)
-
-
 
                         if wandb_logger:
                             wandb_logger.log_image(
