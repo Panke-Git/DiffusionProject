@@ -1,20 +1,41 @@
 '''create dataset and dataloader'''
 import logging
+import torch
 import torch.utils.data
+import random
+import numpy as np
+
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
-def create_dataloader(dataset, dataset_opt, phase):
-    '''create dataloader '''
+def create_dataloader(dataset, dataset_opt, phase, seed=42):
+    '''create dataloader'''
+    g = torch.Generator()
+    g.manual_seed(seed)
+
     if phase == 'train':
         return torch.utils.data.DataLoader(
             dataset,
             batch_size=dataset_opt['batch_size'],
             shuffle=dataset_opt['use_shuffle'],
             num_workers=dataset_opt['num_workers'],
-            pin_memory=True)
+            pin_memory=True,
+            worker_init_fn=seed_worker,
+            generator=g
+        )
     elif phase == 'val':
         return torch.utils.data.DataLoader(
-            dataset, batch_size=1, shuffle=False, num_workers=1, pin_memory=True)
+            dataset,
+            batch_size=1,
+            shuffle=False,
+            num_workers=1,
+            pin_memory=True,
+            worker_init_fn=seed_worker,
+            generator=g
+        )
     else:
         raise NotImplementedError(
             'Dataloader [{:s}] is not found.'.format(phase))

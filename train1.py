@@ -10,6 +10,7 @@ from tensorboardX import SummaryWriter
 import json
 import os
 import numpy as np
+import random
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -26,29 +27,20 @@ if __name__ == "__main__":
     # 解析配置文件
     args = parser.parse_args()
 
+    SEED = 42
     def seed_everything(seed=42):
-        import os
-        import random
-        import torch
-
         random.seed(seed)
         np.random.seed(seed)
-        os.environ['PYTHONHASHSEED'] = str(seed)
-
         torch.manual_seed(seed)
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
 
-        # 保证卷积算法确定性
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-
-        # PyTorch 2.x 强制确定性
         torch.use_deterministic_algorithms(True)
 
-        # CUDA 12.x（你在用）
-        os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
-    seed_everything(42)
+
+    seed_everything(SEED)
 
     opt = Logger.parse(args)
     # Convert to NoneDict, which return None for missing key.
@@ -56,7 +48,7 @@ if __name__ == "__main__":
 
     # logging
     torch.backends.cudnn.enabled = True
-    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = False
 
     Logger.setup_logger(None, opt['path']['log'],
                         'train', level=logging.INFO, screen=True)
@@ -82,11 +74,11 @@ if __name__ == "__main__":
         if phase == 'train' and args.phase != 'val':
             train_set = Data.create_dataset(dataset_opt, phase)
             train_loader = Data.create_dataloader(
-                train_set, dataset_opt, phase)
+                train_set, dataset_opt, phase, seed=SEED)
         elif phase == 'val':
             val_set = Data.create_dataset(dataset_opt, phase)
             val_loader = Data.create_dataloader(
-                val_set, dataset_opt, phase)
+                val_set, dataset_opt, phase, seed=SEED)
     logger.info('Initial Dataset Finished')
 
     # model 创建Model
