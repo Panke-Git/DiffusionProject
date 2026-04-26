@@ -13,8 +13,8 @@ def seed_worker(worker_id):
 
 def create_dataloader(dataset, dataset_opt, phase, seed=42):
     '''create dataloader'''
-    g = torch.Generator()
-    g.manual_seed(seed)
+    # g = torch.Generator()
+    # g.manual_seed(seed)
 
     if phase == 'train':
         return torch.utils.data.DataLoader(
@@ -23,8 +23,8 @@ def create_dataloader(dataset, dataset_opt, phase, seed=42):
             shuffle=dataset_opt['use_shuffle'],
             num_workers=dataset_opt['num_workers'],
             pin_memory=True,
-            worker_init_fn=seed_worker,
-            generator=g
+            # worker_init_fn=seed_worker,
+            # generator=g
         )
     elif phase == 'val':
         return torch.utils.data.DataLoader(
@@ -33,8 +33,8 @@ def create_dataloader(dataset, dataset_opt, phase, seed=42):
             shuffle=False,
             num_workers=1,
             pin_memory=True,
-            worker_init_fn=seed_worker,
-            generator=g
+            # worker_init_fn=seed_worker,
+            # generator=g
         )
     else:
         raise NotImplementedError(
