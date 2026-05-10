@@ -72,11 +72,11 @@ if __name__ == "__main__":
     # dataset dataloader
     for phase, dataset_opt in opt['datasets'].items():
         if phase == 'train' and args.phase != 'val':
-            train_set = Data.create_dataset(dataset_opt, phase)
+            train_set = Data.create_datasetV1(dataset_opt, phase)
             train_loader = Data.create_dataloader(
                 train_set, dataset_opt, phase, seed=SEED)
         elif phase == 'val':
-            val_set = Data.create_dataset(dataset_opt, phase)
+            val_set = Data.create_datasetV1(dataset_opt, phase)
             val_loader = Data.create_dataloader(
                 val_set, dataset_opt, phase, seed=SEED)
     logger.info('Initial Dataset Finished')
