@@ -56,7 +56,15 @@ class DDPM(BaseModel):
         self.optG.step()
 
         # set log
-        self.log_dict['l_pix'] = l_pix.item()
+        # self.log_dict['l_pix'] = l_pix.item()
+
+        self.log_dict['l_total_norm'] = l_pix.item()
+
+        # 再从 diffusion 模块读取各子项（未归一化的原始值）
+        netG_core = self.netG.module if isinstance(self.netG, nn.DataParallel) else self.netG
+        if hasattr(netG_core, 'latest_reg_info'):
+            for k, v in netG_core.latest_reg_info.items():
+                self.log_dict[k] = v
 
     def test(self, continous=False):
         self.netG.eval()
