@@ -175,7 +175,6 @@ if __name__ == "__main__":
                     avg_ssim = 0.0
 
                     idx = 0
-                    vis_num=3
                     result_path = '{}/{}'.format(opt['path']['results'], current_epoch)
                     os.makedirs(result_path, exist_ok=True)
 
@@ -196,39 +195,21 @@ if __name__ == "__main__":
                         target_img = Metrics.tensor2img(visuals['target'])  # uint8
                         input_img = Metrics.tensor2img(visuals['input'])  # uint8
 
-                        # PSNR / SSIM 对完整 validation set 统计
+                        # generation
+                        Metrics.save_img(target_img, '{}/{}_{}_target.png'.format(result_path, current_step, idx))
+                        Metrics.save_img(restore_img, '{}/{}_{}_output.png'.format(result_path, current_step, idx))
+                        Metrics.save_img(input_img, '{}/{}_{}_input.png'.format(result_path, current_step, idx))
+                        tb_logger.add_image(
+                            'Iter_{}'.format(current_step),
+                            np.transpose(np.concatenate((input_img, restore_img, target_img), axis=1), [2, 0, 1]), idx)
                         avg_psnr += Metrics.calculate_psnr(restore_img, target_img)
                         avg_ssim += Metrics.calculate_ssim(restore_img, target_img)
 
-                        # 只保存和可视化前 vis_num 张
-                        if idx <= vis_num:
-                            Metrics.save_img(
-                                target_img,
-                                '{}/{}_{}_target.png'.format(result_path, current_step, idx)
+                        if wandb_logger:
+                            wandb_logger.log_image(
+                                f'validation_{idx}',
+                                np.concatenate((input_img, restore_img, target_img), axis=1)
                             )
-                            Metrics.save_img(
-                                restore_img,
-                                '{}/{}_{}_output.png'.format(result_path, current_step, idx)
-                            )
-                            Metrics.save_img(
-                                input_img,
-                                '{}/{}_{}_input.png'.format(result_path, current_step, idx)
-                            )
-
-                            tb_logger.add_image(
-                                'Iter_{}'.format(current_step),
-                                np.transpose(
-                                    np.concatenate((input_img, restore_img, target_img), axis=1),
-                                    [2, 0, 1]
-                                ),
-                                idx
-                            )
-
-                            if wandb_logger:
-                                wandb_logger.log_image(
-                                    f'validation_{idx}',
-                                    np.concatenate((input_img, restore_img, target_img), axis=1)
-                                )
 
                     avg_psnr = avg_psnr / idx
                     avg_ssim = avg_ssim / idx
@@ -236,7 +217,6 @@ if __name__ == "__main__":
 
                     diffusion.set_new_noise_schedule(
                         opt['model']['beta_schedule']['train'], schedule_phase='train')
-                    diffusion.netG.train()
                     # log
                     logger.info('# Validation # Loss:{:.4e} PSNR: {:.4e} SSIM:{:.4e}'.format(avg_loss, avg_psnr, avg_ssim))
                     logger_val = logging.getLogger('val')  # validation logger
@@ -272,7 +252,6 @@ if __name__ == "__main__":
                         wandb_logger.log_metrics({
                             'validation_loss': avg_loss,
                             'validation/val_psnr': avg_psnr,
-                            'validation/val_ssim': avg_ssim,
                             'validation/val_loss': avg_loss,
                             'validation/val_step': val_step,
                         })
