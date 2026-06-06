@@ -5,6 +5,7 @@ import argparse
 import logging
 import core.logger as Logger
 import core.metrics as Metrics
+from core.validation import ValidationScheduler, run_validation, should_save_checkpoint
 from core.wandb_logger import WandbLogger
 from tensorboardX import SummaryWriter
 import os
@@ -80,14 +81,16 @@ if __name__ == "__main__":
     diffusion.set_new_noise_schedule(
         opt['model']['beta_schedule'][opt['phase']], schedule_phase=opt['phase'])
     if opt['phase'] == 'train':
+        validation_scheduler = ValidationScheduler(opt, n_iter)
         while current_step < n_iter:
             current_epoch += 1
             for _, train_data in enumerate(train_loader):
                 current_step += 1
+                checkpoint_saved_this_step = False
                 if current_step > n_iter:
                     break
                 if wandb_logger:
-                    wandb_logger.log_metrics(len(train_data))
+                    wandb_logger.log_metrics({'train/batch_size': train_data['target'].shape[0]}, commit=False)
                 diffusion.feed_data(train_data)
                 diffusion.optimize_parameters()
                 # log
@@ -103,53 +106,30 @@ if __name__ == "__main__":
                         wandb_logger.log_metrics(logs)
 
                 # validation
-                if current_step % opt['train']['val_freq'] == 0:
-                    avg_psnr = 0.0
-                    idx = 0
-                    result_path = '{}/{}'.format(opt['path']['results'], current_epoch)
-                    os.makedirs(result_path, exist_ok=True)
-
-                    diffusion.set_new_noise_schedule(opt['model']['beta_schedule']['val'], schedule_phase='val')
-                    for _, val_data in enumerate(val_loader):
-                        idx += 1
-                        diffusion.feed_data(val_data)
-                        diffusion.test(continous=False)
-                        visuals = diffusion.get_current_visuals()
-                        restore_img = Metrics.tensor2img(visuals['output'])  # uint8
-                        target_img = Metrics.tensor2img(visuals['target'])  # uint8
-                        input_img = Metrics.tensor2img(visuals['input'])  # uint8
-
-                        # generation
-                        Metrics.save_img(target_img, '{}/{}_{}_taget.png'.format(result_path, current_step, idx))
-                        Metrics.save_img(restore_img, '{}/{}_{}_output.png'.format(result_path, current_step, idx))
-                        Metrics.save_img(input_img, '{}/{}_{}_input.png'.format(result_path, current_step, idx))
-                        tb_logger.add_image(
-                            'Iter_{}'.format(current_step),
-                            np.transpose(np.concatenate((input_img, restore_img, target_img), axis=1), [2, 0, 1]), idx)
-                        avg_psnr += Metrics.calculate_psnr(restore_img, target_img)
-
+                validation_jobs = validation_scheduler.get_jobs(current_step)
+                if validation_jobs:
+                    for job in validation_jobs:
+                        info = run_validation(
+                            diffusion, val_loader, opt, current_epoch, current_step,
+                            job['tag'], job['cfg'], tb_logger=tb_logger,
+                            wandb_logger=wandb_logger
+                        )
+                        if should_save_checkpoint(opt, job['tag']):
+                            logger.info('Saving checkpoint after %s validation.', job['tag'])
+                            diffusion.save_network(current_epoch, current_step)
+                            checkpoint_saved_this_step = True
                         if wandb_logger:
-                            wandb_logger.log_image(
-                                f'validation_{idx}',
-                                np.concatenate((input_img, restore_img, target_img), axis=1)
-                            )
+                            wandb_metrics = {
+                                'validation/{}/val_loss'.format(job['tag']): info['val_loss'],
+                                'validation/val_step': val_step,
+                            }
+                            for metric_name in ['psnr', 'ssim', 'uiqm', 'uciqe']:
+                                if metric_name in info:
+                                    wandb_metrics['validation/{}/{}'.format(job['tag'], metric_name)] = info[metric_name]
+                            wandb_logger.log_metrics(wandb_metrics)
+                            val_step += 1
 
-                    avg_psnr = avg_psnr / idx
-                    diffusion.set_new_noise_schedule(
-                        opt['model']['beta_schedule']['train'], schedule_phase='train')
-                    # log
-                    logger.info('# Validation # PSNR: {:.4e}'.format(avg_psnr))
-                    logger_val = logging.getLogger('val')  # validation logger
-                    logger_val.info('<epoch:{:3d}, iter:{:8,d}> psnr: {:.4e}'.format(
-                        current_epoch, current_step, avg_psnr))
-                    # tensorboard logger
-                    tb_logger.add_scalar('psnr', avg_psnr, current_step)
-
-                    if wandb_logger:
-                        wandb_logger.log_metrics({'validation/val_psnr': avg_psnr, 'validation/val_step': val_step})
-                        val_step += 1
-
-                if current_step % opt['train']['save_checkpoint_freq'] == 0:
+                if current_step % opt['train']['save_checkpoint_freq'] == 0 and not checkpoint_saved_this_step:
                     logger.info('Saving models and training states.')
                     diffusion.save_network(current_epoch, current_step)
 
@@ -159,6 +139,16 @@ if __name__ == "__main__":
             if wandb_logger:
                 wandb_logger.log_metrics({'epoch': current_epoch - 1})
 
+        final_job = validation_scheduler.final_job()
+        if final_job is not None:
+            run_validation(
+                diffusion, val_loader, opt, current_epoch, current_step,
+                final_job['tag'], final_job['cfg'], tb_logger=tb_logger,
+                wandb_logger=wandb_logger
+            )
+            if should_save_checkpoint(opt, final_job['tag']):
+                logger.info('Saving checkpoint after %s validation.', final_job['tag'])
+                diffusion.save_network(current_epoch, current_step)
         # save model
         logger.info('End of training.')
     else:

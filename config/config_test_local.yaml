@@ -71,5 +71,42 @@ train:
         update_ema_every: 1
         ema_decay: 0.9999
 
+validation:
+    seed: 42
+    report_metrics: ["psnr", "ssim", "uiqm", "uciqe"]
+    track_best_modes: ["full", "final"]
+    checkpoint_modes: ["full", "final"]
+    fast:
+        enabled: true
+        freq: 100
+        num_samples: 10
+        n_timestep: 100
+        save_images: true
+        max_save_images: 4
+        metrics: ["psnr", "ssim"]
+    medium:
+        enabled: true
+        progress_ratios: [0.25]
+        num_samples: 100
+        n_timestep: 1000
+        save_images: true
+        max_save_images: 8
+        metrics: ["psnr", "ssim"]
+    full:
+        enabled: true
+        progress_ratios: [0.5, 0.75]
+        num_samples: -1
+        n_timestep: 2000
+        save_images: true
+        max_save_images: 8
+        metrics: ["psnr", "ssim", "uiqm", "uciqe"]
+    final:
+        enabled: true
+        num_samples: -1
+        n_timestep: 2000
+        save_images: true
+        max_save_images: 16
+        metrics: ["psnr", "ssim", "uiqm", "uciqe"]
+
 wandb:
     project: "UIE"

@@ -1,0 +1,284 @@
+# 实验名称。Logger.parse() 会根据它创建实验目录：
+# experiments/<name>_<timestamp>/...
+name: "UNet_UAS4_ADMM_V3"
+
+# 使用的 GPU 编号。[0] 表示单卡 0；[0, 1] 表示多卡。
+# 如果命令行传入 -gpu 参数，这里的值会被命令行覆盖。
+gpu_ids: [0]
+
+path:
+    # 训练日志保存目录。实际路径会被拼到 experiments/<name>_<timestamp>/logs。
+    log: "logs"
+
+    # TensorBoard 日志目录。
+    tb_logger: "tb_logger"
+
+    # 验证阶段保存输入图、输出图、目标图等可视化结果的目录。
+    results: "results"
+
+    # 普通 checkpoint 保存目录，包括按 save_checkpoint_freq 保存的 checkpoint，
+    # 以及 full/final validation 节点强制保存的 checkpoint。
+    checkpoint: "checkpoint"
+
+    # best checkpoint 保存目录，包括 best_loss/best_psnr/best_ssim。
+    best: "best"
+
+    # 断点恢复路径前缀，不要带 _gen.pth 或 _opt.pth 后缀。
+    # 例如：
+    # resume_state: "experiments/EXP/checkpoint/I10000_E5"
+    # 如果从头训练，保持为空即可。
+    resume_state:
+
+datasets:
+    train:
+        # 数据集名称，仅用于日志记录，不影响实际加载逻辑。
+        name: "LSUI"
+
+        # 训练集根目录。当前 Dataset 支持以下目录结构：
+        # input_<resolution>/ + target_<resolution>/，
+        # 或 input/ + GT/target/gt/。
+        dataroot: "/path/to/LSUI19/Train"
+
+        # 输入图和 GT 图都会被 resize 到 resolution x resolution。
+        resolution: 256
+
+        # 训练 batch size。
+        batch_size: 16
+
+        # 训练 DataLoader 的 worker 数量。
+        num_workers: 6
+
+        # 是否打乱训练集。
+        use_shuffle: true
+
+        # 限制训练集使用的图片数量。-1 表示使用完整训练集。
+        data_len: -1
+
+    val:
+        # 验证集名称，仅用于日志记录。
+        name: "LSUI"
+
+        # 验证集根目录。应当和训练集目录分开，避免数据泄漏。
+        dataroot: "/path/to/LSUI19/Val"
+
+        # 验证图像也会被 resize 到该分辨率。
+        resolution: 256
+
+        # 当前验证 DataLoader 固定 shuffle=False，因此这里基本不会生效。
+        use_shuffle: true
+
+        # 限制验证集使用的图片数量。-1 表示使用完整验证集。
+        data_len: -1
+
+model:
+    unet:
+        # UNet 输入通道数。条件扩散中输入是 concat(condition_rgb, noisy_rgb)，
+        # 因此通常是 3 + 3 = 6。
+        in_channel: 6
+
+        # UNet 输出通道数。RGB 噪声预测任务通常是 3。
+        out_channel: 3
+
+        # UNet 基础通道数。越大模型容量越强，但显存占用也越高。
+        inner_channel: 64
+
+        # GroupNorm 的 group 数，需要能整除相关通道数。
+        norm_groups: 16
+
+        # UNet 各层级的通道倍率。
+        # [1, 2, 4, 8, 16] 表示越往深层通道数越多。
+        channel_multiplier: [1, 2, 4, 8, 16]
+
+        # 开启 attention 的特征图分辨率。[] 表示不启用 attention。
+        # 例如 [16] 表示在 16x16 特征层使用 attention，前提是对应 UNet 实现支持。
+        attn_res: []
+
+        # 每个 UNet 层级的残差块数量。
+        res_blocks: 1
+
+        # UNet 残差块中的 dropout 概率。
+        dropout: 0
+
+        # 某些网络版本会使用的额外结构参数。
+        # 如果当前模型版本没有用到，也建议保留，避免兼容性问题。
+        channels: 1024
+        ratio: 1
+        cond_in_dim: 3
+
+        # UNet 期望的输入图像大小，应与 datasets.*.resolution 保持一致。
+        image_size: 256
+
+    diffusion:
+        # 扩散模型处理的图像尺寸，应与数据分辨率和 UNet image_size 一致。
+        image_size: 256
+
+        # 目标图像通道数。RGB 图像为 3。
+        channels: 3
+
+        # true 表示条件扩散，即使用退化图像/条件图引导恢复。
+        conditional: true
+
+    beta_schedule:
+        train:
+            # 噪声调度类型。当前代码支持：
+            # linear、quad、warmup10、warmup50、const、jsd、cosine。
+            schedule: linear
+
+            # 训练阶段扩散步数。
+            n_timestep: 2000
+
+            # linear schedule 的起始 beta。
+            linear_start: 0.000001
+
+            # linear schedule 的结束 beta。
+            linear_end: 0.01
+
+        val:
+            # 验证阶段的基础噪声调度。
+            # validation.fast/medium/full/final 中的 n_timestep 可以覆盖这里的步数。
+            schedule: linear
+            n_timestep: 2000
+            linear_start: 0.000001
+            linear_end: 0.01
+
+# 旧版兼容字段。当前模型构建主要读取 model.diffusion。
+# 保留该字段可以兼容旧脚本或旧代码。
+diffusion:
+    image_size: 256
+    channels: 3
+    conditional: true
+
+train:
+    # 总训练迭代次数。
+    n_iter: 200000
+
+    # 旧版验证间隔。当前新验证策略优先使用 validation.fast.freq；
+    # 如果 fast.freq 没配置，才会用这里作为 fallback。
+    val_freq: 1000
+
+    # 普通 checkpoint 保存间隔，单位为 iter。
+    save_checkpoint_freq: 10000
+
+    # 训练日志打印间隔，单位为 iter。
+    print_freq: 100
+
+    optimizer:
+        # 优化器类型。当前训练代码实际使用 Adam；这里主要用于记录。
+        type: "adam"
+
+        # Adam 学习率。
+        lr: 0.000005
+
+    ema_scheduler:
+        # EMA 相关配置。当前训练脚本暂时没有真正维护 EMA 模型；
+        # 如果后续实现 EMA，可以使用这些参数。
+        step_start_ema: 5000
+        update_ema_every: 1
+        ema_decay: 0.9999
+
+validation:
+    # 验证阶段固定随机种子，用于降低扩散采样随机性带来的指标波动。
+    seed: 42
+
+    # 默认报告指标。如果某个验证模式没有单独配置 metrics，就会使用这里。
+    # psnr/ssim 是有参考指标，需要 GT；uiqm/uciqe 是水下图像常用无参考指标。
+    report_metrics: ["psnr", "ssim", "uiqm", "uciqe"]
+
+    # 只有这些验证模式可以更新 best_loss/best_psnr/best_ssim。
+    # fast validation 不参与 best，是为了避免模型选择过拟合少量样本。
+    track_best_modes: ["full", "final"]
+
+    # 这些验证模式结束后会强制保存普通 checkpoint。
+    # 文件保存在 path.checkpoint 下，格式为 I{iter}_E{epoch}_gen/opt.pth。
+    checkpoint_modes: ["full", "final"]
+
+    fast:
+        # 高频轻量验证，用于观察训练趋势。
+        enabled: true
+
+        # 每隔多少 iter 做一次 fast validation。
+        freq: 1000
+
+        # fast validation 使用的验证图片数量。建议 8-16 张。
+        # -1 表示使用完整验证集，但 fast 模式下通常不建议。
+        num_samples: 10
+
+        # fast validation 的采样步数。越小越快，但指标越不正式。
+        n_timestep: 100
+
+        # 是否保存验证图像。
+        save_images: true
+
+        # 最多保存多少组验证图像，避免结果目录过大。
+        max_save_images: 4
+
+        # fast validation 计算的指标。
+        metrics: ["psnr", "ssim"]
+
+    medium:
+        # 中频中等规模验证，用于比 fast 更稳定地观察模型质量。
+        enabled: true
+
+        # 训练进度触发点。0.25 表示训练到 train.n_iter 的 25% 时触发。
+        progress_ratios: [0.25]
+
+        # medium validation 使用的验证图片数量。-1 表示完整验证集。
+        num_samples: 100
+
+        # medium validation 的采样步数。
+        n_timestep: 1000
+
+        # 是否保存验证图像。
+        save_images: true
+
+        # 最多保存多少组验证图像。
+        max_save_images: 8
+
+        # medium validation 计算的指标。
+        metrics: ["psnr", "ssim"]
+
+    full:
+        # 训练过程中的正式完整验证。
+        enabled: true
+
+        # 完整验证触发点。当前为 50% 和 75%。
+        # 如果你想在 50% 和 70% 做完整验证，可以改成 [0.5, 0.7]。
+        progress_ratios: [0.5, 0.75]
+
+        # -1 表示使用完整验证集。
+        num_samples: -1
+
+        # 正式验证采样步数，通常应与 model.beta_schedule.val.n_timestep 一致。
+        n_timestep: 2000
+
+        # 是否保存验证图像。
+        save_images: true
+
+        # 最多保存多少组验证图像。
+        max_save_images: 8
+
+        # full validation 计算的指标。
+        metrics: ["psnr", "ssim", "uiqm", "uciqe"]
+
+    final:
+        # 训练循环结束后的最终完整验证。
+        enabled: true
+
+        # -1 表示使用完整验证集。
+        num_samples: -1
+
+        # 最终验证采样步数。
+        n_timestep: 2000
+
+        # 是否保存验证图像。
+        save_images: true
+
+        # 最多保存多少组最终验证图像。
+        max_save_images: 16
+
+        # 最终报告指标。
+        metrics: ["psnr", "ssim", "uiqm", "uciqe"]
+
+wandb:
+    # Weights & Biases 项目名。只有命令行传入 -enable_wandb 时才会使用。
+    project: "UIE"

@@ -47,6 +47,13 @@ class UIEDataset(Dataset):
             f"Paired dataset size mismatch: inputs={len(self.input_path)} targets={len(self.target_path)}. "
             f"input_dir={input_dir} target_dir={target_dir}"
         )
+        for input_file, target_file in zip(self.input_path, self.target_path):
+            input_name = os.path.splitext(os.path.basename(input_file))[0]
+            target_name = os.path.splitext(os.path.basename(target_file))[0]
+            assert input_name == target_name, (
+                f"Paired dataset filename mismatch: input={input_file} target={target_file}. "
+                "Please make sure input and target images have matching basenames."
+            )
 
         self.dataset_len = len(self.target_path)
         if self.data_len <= 0:
@@ -73,6 +80,5 @@ class UIEDataset(Dataset):
         [input, target] = Util.transform_augment([input, target], split=self.split, min_max=(-1, 1))
 
         return {'target': target, 'input': input, 'Index': index}
-
 
 

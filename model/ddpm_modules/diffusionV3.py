@@ -98,6 +98,7 @@ class GaussianDiffusion(nn.Module):
         self.denoise_fn = denoise_fn
         self.conditional = conditional
         self.loss_type = loss_type
+        self.loss_is_normalized = True
 
         self.lambda_reg = lambda_reg
 
@@ -296,8 +297,10 @@ class GaussianDiffusion(nn.Module):
         else:
             noise_pred = self.denoise_fn(torch.cat([cond_img, x_noisy], dim=1), t)
 
-        # 2) 原始 diffusion loss
-        diffusion_loss = self.loss_func(noise, noise_pred)
+        # 2) 原始 diffusion loss. Keep the diffusion term on the same
+        # per-pixel scale as the regularizer instead of normalizing both later.
+        diffusion_loss_sum = self.loss_func(noise, noise_pred)
+        diffusion_loss = diffusion_loss_sum / int(b * c * h * w)
 
         # 3) 从噪声预测恢复 x0_pred
         x0_pred = self.predict_start_from_noise(x_noisy, t=t, noise=noise_pred)
@@ -319,32 +322,13 @@ class GaussianDiffusion(nn.Module):
         )
 
         # 7) 总损失
-        # diffusion_loss 使用 reduction='sum'，外层 modelV3.py 会再除以 B*C*H*W
-        # reg_loss 在 DepthGuidedAdaptiveRegularizer 内部已经是 mean
-        # 因此这里需要乘回 numel，使外层归一化后得到：
-        # diffusion_loss / numel + lambda_reg * reg_loss
-        numel = b * c * h * w
-        total_loss = diffusion_loss + self.lambda_reg * reg_loss * numel
+        total_loss = diffusion_loss + self.lambda_reg * reg_loss
 
         # 8) 保存日志，方便 train1.py 打印
         self.latest_reg_info = {
-            # 原始 diffusion sum loss
-            'l_diff_sum': diffusion_loss.detach().item(),
-
-            # 与外层归一化后一致的 diffusion mean loss
-            'l_diff_mean': (diffusion_loss.detach() / numel).item(),
-
-            # 深度正则本身，已经是 mean 量级
+            'l_pix': diffusion_loss.detach().item(),
             'l_depth_reg': reg_loss.detach().item(),
-
-            # 深度正则进入总 loss 的有效贡献
-            'l_depth_reg_weighted': (self.lambda_reg * reg_loss.detach()).item(),
-
-            # 外层归一化后的总 loss 期望值
-            'l_total_mean_expected': (
-                    diffusion_loss.detach() / numel + self.lambda_reg * reg_loss.detach()
-            ).item(),
-
+            'l_total': total_loss.detach().item(),
             'l_adaptive_tv': reg_info['reg_adaptive_tv'].item(),
             'l_edge_align': reg_info['reg_edge_align'].item(),
         }

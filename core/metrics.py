@@ -87,9 +87,96 @@ def calculate_ssim(img1, img2):
         if img1.shape[2] == 3:
             ssims = []
             for i in range(3):
-                ssims.append(ssim(img1, img2))
+                ssims.append(ssim(img1[:, :, i], img2[:, :, i]))
             return np.array(ssims).mean()
         elif img1.shape[2] == 1:
             return ssim(np.squeeze(img1), np.squeeze(img2))
     else:
         raise ValueError('Wrong input image dimensions.')
+
+
+def calculate_uciqe(img):
+    '''Calculate UCIQE for an RGB uint8 image.'''
+    img = img.astype(np.float32) / 255.0
+    lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
+    l = lab[:, :, 0]
+    a = lab[:, :, 1]
+    b = lab[:, :, 2]
+
+    chroma = np.sqrt(a * a + b * b)
+    sigma_c = np.std(chroma)
+    contrast_l = np.percentile(l, 99) - np.percentile(l, 1)
+    saturation = chroma / np.sqrt(chroma * chroma + l * l + 1e-12)
+    mean_s = np.mean(saturation)
+
+    return 0.4680 * sigma_c + 0.2745 * contrast_l + 0.2576 * mean_s
+
+
+def _trimmed_mean_and_var(x, trim_ratio=0.1):
+    x = np.sort(x.reshape(-1).astype(np.float64))
+    n = len(x)
+    trim = int(n * trim_ratio)
+    if trim * 2 >= n:
+        trimmed = x
+    else:
+        trimmed = x[trim:n - trim]
+    return np.mean(trimmed), np.var(trimmed)
+
+
+def _eme(channel, block_size=8):
+    channel = channel.astype(np.float64)
+    h, w = channel.shape
+    score = 0.0
+    count = 0
+    eps = 1e-6
+
+    for y in range(0, h, block_size):
+        for x in range(0, w, block_size):
+            block = channel[y:min(y + block_size, h), x:min(x + block_size, w)]
+            block_min = np.min(block)
+            block_max = np.max(block)
+            if block_max > eps and block_min >= 0:
+                score += np.log((block_max + eps) / (block_min + eps))
+                count += 1
+
+    if count == 0:
+        return 0.0
+    return 20.0 * score / count
+
+
+def _uicm(img):
+    img = img.astype(np.float64)
+    r = img[:, :, 0]
+    g = img[:, :, 1]
+    b = img[:, :, 2]
+    rg = r - g
+    yb = (r + g) / 2.0 - b
+
+    mu_rg, var_rg = _trimmed_mean_and_var(rg)
+    mu_yb, var_yb = _trimmed_mean_and_var(yb)
+    mu = np.sqrt(mu_rg * mu_rg + mu_yb * mu_yb)
+    sigma = np.sqrt(var_rg + var_yb)
+    return -0.0268 * mu + 0.1586 * sigma
+
+
+def _uism(img):
+    img = img.astype(np.float64)
+    weights = [0.299, 0.587, 0.114]
+    score = 0.0
+    for i, weight in enumerate(weights):
+        channel = img[:, :, i]
+        sx = cv2.Sobel(channel, cv2.CV_64F, 1, 0, ksize=3)
+        sy = cv2.Sobel(channel, cv2.CV_64F, 0, 1, ksize=3)
+        edge = np.sqrt(sx * sx + sy * sy)
+        score += weight * _eme(edge * channel)
+    return score
+
+
+def _uiconm(img):
+    gray = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_RGB2GRAY)
+    return _eme(gray)
+
+
+def calculate_uiqm(img):
+    '''Calculate UIQM for an RGB uint8 image.'''
+    return 0.0282 * _uicm(img) + 0.2953 * _uism(img) + 3.5753 * _uiconm(img)

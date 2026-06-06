@@ -319,18 +319,13 @@ class GaussianDiffusion(nn.Module):
         )
 
         # 7) 总损失
-        numel = b * c * h * w
-        total_loss = diffusion_loss + self.lambda_reg * reg_loss * numel
+        total_loss = diffusion_loss + self.lambda_reg * reg_loss
 
         # 8) 保存日志，方便 train1.py 打印
         self.latest_reg_info = {
-            'l_diff_sum': diffusion_loss.detach().item(),
-            'l_diff_mean': (diffusion_loss.detach() / numel).item(),
+            'l_pix': diffusion_loss.detach().item(),
             'l_depth_reg': reg_loss.detach().item(),
-            'l_depth_reg_weighted': (self.lambda_reg * reg_loss.detach()).item(),
-            'l_total_mean_expected': (
-                    diffusion_loss.detach() / numel + self.lambda_reg * reg_loss.detach()
-            ).item(),
+            'l_total': total_loss.detach().item(),
             'l_adaptive_tv': reg_info['reg_adaptive_tv'].item(),
             'l_edge_align': reg_info['reg_edge_align'].item(),
         }

@@ -2,10 +2,12 @@ torch>=1.6
 torchvision
 numpy
 pandas
+PyYAML
 tqdm
 lmdb
 opencv-python
 pillow
+scipy
+scikit-image
 tensorboardx
 wandb
-

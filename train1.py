@@ -5,6 +5,7 @@ import argparse
 import logging
 import core.logger as Logger
 import core.metrics as Metrics
+from core.validation import ValidationScheduler, run_validation, should_track_best, should_save_checkpoint, update_best_records
 from core.wandb_logger import WandbLogger
 from tensorboardX import SummaryWriter
 import json
@@ -135,16 +136,18 @@ if __name__ == "__main__":
         # Track train loss between validations (so we can store train_loss with each best)
         train_loss_sum = 0.0
         train_loss_count = 0
+        validation_scheduler = ValidationScheduler(opt, n_iter)
 
         os.makedirs(opt['path'].get('best', os.path.join(opt['path']['experiments_root'], 'best')), exist_ok=True)
         while current_step < n_iter:
             current_epoch += 1
             for _, train_data in enumerate(train_loader):
                 current_step += 1
+                checkpoint_saved_this_step = False
                 if current_step > n_iter:
                     break
                 if wandb_logger:
-                    wandb_logger.log_metrics(len(train_data))
+                    wandb_logger.log_metrics({'train/batch_size': train_data['target'].shape[0]}, commit=False)
                 diffusion.feed_data(train_data)
                 diffusion.optimize_parameters()
 
@@ -166,119 +169,37 @@ if __name__ == "__main__":
                         wandb_logger.log_metrics(logs)
 
                 # validation
-                if current_step % opt['train']['val_freq'] == 0:
+                validation_jobs = validation_scheduler.get_jobs(current_step)
+                if validation_jobs:
                     avg_train_loss = (train_loss_sum / max(1, train_loss_count))
                     train_loss_sum = 0.0
                     train_loss_count = 0
-                    avg_loss = 0.0
-                    avg_psnr = 0.0
-                    avg_ssim = 0.0
+                    tb_logger.add_scalar('train_loss', avg_train_loss, current_step)
+                    for job in validation_jobs:
+                        info = run_validation(
+                            diffusion, val_loader, opt, current_epoch, current_step,
+                            job['tag'], job['cfg'], tb_logger=tb_logger,
+                            wandb_logger=wandb_logger
+                        )
+                        info['train_loss'] = avg_train_loss
+                        if should_track_best(opt, job['tag']):
+                            best_records = update_best_records(diffusion, best_records, info, save_best_metrics)
+                        if should_save_checkpoint(opt, job['tag']):
+                            logger.info('Saving checkpoint after %s validation.', job['tag'])
+                            diffusion.save_network(current_epoch, current_step)
+                            checkpoint_saved_this_step = True
+                        if wandb_logger:
+                            wandb_metrics = {
+                                'validation/{}/val_loss'.format(job['tag']): info['val_loss'],
+                                'validation/val_step': val_step,
+                            }
+                            for metric_name in ['psnr', 'ssim', 'uiqm', 'uciqe']:
+                                if metric_name in info:
+                                    wandb_metrics['validation/{}/{}'.format(job['tag'], metric_name)] = info[metric_name]
+                            wandb_logger.log_metrics(wandb_metrics)
+                            val_step += 1
 
-                    idx = 0
-                    vis_num=3
-                    result_path = '{}/{}'.format(opt['path']['results'], current_epoch)
-                    os.makedirs(result_path, exist_ok=True)
-
-                    diffusion.set_new_noise_schedule(opt['model']['beta_schedule']['val'], schedule_phase='val')
-
-                    for _, val_data in enumerate(val_loader):
-                        idx += 1
-                        diffusion.feed_data(val_data)
-                        diffusion.netG.eval()
-                        with torch.no_grad():
-                            l_pix = diffusion.netG(diffusion.data)
-                            b, c, h, w = diffusion.data['target'].shape
-                            l_pix = l_pix.sum()/int(b*c*h*w)
-                        avg_loss += l_pix.item()
-                        diffusion.test(continous=False)
-                        visuals = diffusion.get_current_visuals()
-                        restore_img = Metrics.tensor2img(visuals['output'])  # uint8
-                        target_img = Metrics.tensor2img(visuals['target'])  # uint8
-                        input_img = Metrics.tensor2img(visuals['input'])  # uint8
-
-                        # PSNR / SSIM 对完整 validation set 统计
-                        avg_psnr += Metrics.calculate_psnr(restore_img, target_img)
-                        avg_ssim += Metrics.calculate_ssim(restore_img, target_img)
-
-                        # 只保存和可视化前 vis_num 张
-                        if idx <= vis_num:
-                            Metrics.save_img(
-                                target_img,
-                                '{}/{}_{}_target.png'.format(result_path, current_step, idx)
-                            )
-                            Metrics.save_img(
-                                restore_img,
-                                '{}/{}_{}_output.png'.format(result_path, current_step, idx)
-                            )
-                            Metrics.save_img(
-                                input_img,
-                                '{}/{}_{}_input.png'.format(result_path, current_step, idx)
-                            )
-
-                            tb_logger.add_image(
-                                'Iter_{}'.format(current_step),
-                                np.transpose(
-                                    np.concatenate((input_img, restore_img, target_img), axis=1),
-                                    [2, 0, 1]
-                                ),
-                                idx
-                            )
-
-                            if wandb_logger:
-                                wandb_logger.log_image(
-                                    f'validation_{idx}',
-                                    np.concatenate((input_img, restore_img, target_img), axis=1)
-                                )
-
-                    avg_psnr = avg_psnr / idx
-                    avg_ssim = avg_ssim / idx
-                    avg_loss = avg_loss / idx
-
-                    diffusion.set_new_noise_schedule(
-                        opt['model']['beta_schedule']['train'], schedule_phase='train')
-                    diffusion.netG.train()
-                    # log
-                    logger.info('# Validation # Loss:{:.4e} PSNR: {:.4e} SSIM:{:.4e}'.format(avg_loss, avg_psnr, avg_ssim))
-                    logger_val = logging.getLogger('val')  # validation logger
-                    logger_val.info('<epoch:{:3d}, iter:{:8,d}> loss: {:.4e} ssim: {:.4e} psnr: {:.4e}'.format(
-                        current_epoch, current_step, avg_loss, avg_ssim, avg_psnr))
-                    # tensorboard logger
-                    tb_logger.add_scalar('train_loss: ', avg_train_loss, current_step)
-                    tb_logger.add_scalar('loss: ', avg_loss, current_step)
-                    tb_logger.add_scalar('psnr: ', avg_psnr, current_step)
-                    tb_logger.add_scalar('ssim: ', avg_ssim, current_step)
-
-                    info={
-                        'epoch': current_epoch,
-                        'iter': current_step,
-                        'train_loss': avg_train_loss,
-                        'val_loss': avg_loss,
-                        'psnr': avg_psnr,
-                        'ssim': avg_ssim,
-                    }
-                    if avg_loss < best_records['loss']['value']:
-                        best_records['loss']={'value': float(avg_loss), 'epoch': current_epoch, 'iter': current_step,}
-                        diffusion.save_best_network('loss', current_epoch, current_step)
-                        save_best_metrics('loss', info)
-                    if avg_psnr > best_records['psnr']['value']:
-                        best_records['psnr'] = {'value': float(avg_psnr), 'epoch': (current_epoch), 'iter': current_step,}
-                        diffusion.save_best_network('psnr', current_epoch, current_step)
-                        save_best_metrics('psnr', info)
-                    if avg_ssim > best_records['ssim']['value']:
-                        best_records['ssim']={'value':float(avg_ssim), 'epoch': current_epoch, 'iter':current_step}
-                        diffusion.save_best_network('ssim', current_epoch, current_step)
-                        save_best_metrics('ssim', info)
-                    if wandb_logger:
-                        wandb_logger.log_metrics({
-                            'validation_loss': avg_loss,
-                            'validation/val_psnr': avg_psnr,
-                            'validation/val_ssim': avg_ssim,
-                            'validation/val_loss': avg_loss,
-                            'validation/val_step': val_step,
-                        })
-                        val_step += 1
-
-                if current_step % opt['train']['save_checkpoint_freq'] == 0:
+                if current_step % opt['train']['save_checkpoint_freq'] == 0 and not checkpoint_saved_this_step:
                     logger.info('Saving models and training states.')
                     diffusion.save_network(current_epoch, current_step)
 
@@ -287,6 +208,19 @@ if __name__ == "__main__":
 
             if wandb_logger:
                 wandb_logger.log_metrics({'epoch': current_epoch - 1})
+        final_job = validation_scheduler.final_job()
+        if final_job is not None:
+            info = run_validation(
+                diffusion, val_loader, opt, current_epoch, current_step,
+                final_job['tag'], final_job['cfg'], tb_logger=tb_logger,
+                wandb_logger=wandb_logger
+            )
+            info['train_loss'] = None
+            if should_track_best(opt, final_job['tag']):
+                best_records = update_best_records(diffusion, best_records, info, save_best_metrics)
+            if should_save_checkpoint(opt, final_job['tag']):
+                logger.info('Saving checkpoint after %s validation.', final_job['tag'])
+                diffusion.save_network(current_epoch, current_step)
         logger.info('======Training Finished: Best Summary======')
         logger.info('Best loss: {:.6e} @ epoch {} iter {}'.format(
             best_records['loss']['value'], best_records['loss']['epoch'], best_records['loss']['iter']))
