@@ -221,10 +221,10 @@ def run_validation(diffusion, val_loader, opt, current_epoch, current_step, tag,
         'iter': current_step,
         'num_samples': idx,
         'n_timestep': schedule['n_timestep'],
-        'val_loss': totals['loss'] / idx,
+        'val_loss': float(totals['loss'] / idx),
     }
     for name in metric_names:
-        info[name] = totals[name] / idx
+        info[name] = float(totals[name] / idx)
 
     diffusion.set_new_noise_schedule(opt['model']['beta_schedule']['train'], schedule_phase='train')
 
