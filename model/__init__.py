@@ -26,3 +26,10 @@ def create_modelV4(opt):
     m = M(opt)
     logger.info('Model [{:s}] is created.'.format(m.__class__.__name__))
     return m
+
+
+def create_modelV5(opt):
+    from .modelV5 import DDPM as M
+    m = M(opt)
+    logger.info('Model [{:s}] is created.'.format(m.__class__.__name__))
+    return m
