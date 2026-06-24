@@ -1,4 +1,4 @@
-name: "Baseline_SMOKE"
+name: "V6_UAS4_DGRM_A4"
 gpu_ids: [0]
 
 path:
@@ -14,16 +14,16 @@ datasets:
         name: "LSUI"
         dataroot: "/public/home/hnust15874739861/pro/publicdata/LSUI19/Train"
         resolution: 256
-        batch_size: 1
-        num_workers: 0
+        batch_size: 16
+        num_workers: 6
         use_shuffle: true
-        data_len: 4
+        data_len: -1
     val:
         name: "LSUI"
         dataroot: "/public/home/hnust15874739861/pro/publicdata/LSUI19/Val"
         resolution: 256
         use_shuffle: true
-        data_len: 2
+        data_len: -1
 model:
     unet:
         in_channel: 6
@@ -38,6 +38,18 @@ model:
         ratio: 1
         cond_in_dim: 3
         image_size: 256
+    dgrm_a4:
+        enabled: true
+        apply_mode: "stage_last"
+        apply_resolutions: [64]
+        cond_channels: 32
+        gaussian_kernel: 5
+        gaussian_sigma: 1.0
+        gamma_scale_low: 0.1
+        beta_scale_low: 0.05
+        gamma_scale_high: 0.1
+        use_depth_edge: true
+        alpha_init: 1.0
     diffusion:
         image_size: 256
         channels: 3
@@ -59,10 +71,10 @@ diffusion:
     conditional: true
 
 train:
-    n_iter: 20
-    val_freq: 5 #1e4
-    save_checkpoint_freq: 100 #1e4
-    print_freq: 1
+    n_iter: 200000
+    val_freq: 1000 #1e4
+    save_checkpoint_freq: 10000 #1e4
+    print_freq: 100
     optimizer:
         type: "adam"
         lr: 0.000005 #5e-6
@@ -77,7 +89,7 @@ validation:
     track_best_modes: ["full", "final"]
     checkpoint_modes: ["full", "final"]
     fast:
-        enabled: false
+        enabled: true
         freq: 1000
         num_samples: 10
         n_timestep: 100
@@ -85,7 +97,7 @@ validation:
         max_save_images: 4
         metrics: ["psnr", "ssim"]
     medium:
-        enabled: false
+        enabled: true
         progress_ratios: [0.25]
         num_samples: 100
         n_timestep: 1000
@@ -93,7 +105,7 @@ validation:
         max_save_images: 8
         metrics: ["psnr", "ssim"]
     full:
-        enabled: false
+        enabled: true
         progress_ratios: [0.5, 0.75]
         num_samples: -1
         n_timestep: 2000
