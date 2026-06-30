@@ -38,6 +38,19 @@
       "DGRMPlus 默认在 decoder 的 32、64、128、256 分辨率 stage_last 位置插入"
     ],
     "相关文件": "[model/DGRM_PLUS.py][model/ddpm_modules/unetV7.py][model/ddpm_modules/diffusionV7.py][model/networksV7.py][model/modelV7.py][config/config7.yaml][train7.py]"
+  },
+  "V8": {
+    "name": "V8_Baseline_ADMM_DepthAdaptiveReg",
+    "note": "Baseline + ADMM 深度自适应正则 loss",
+    "主要内容": [
+      "使用原始 baseline UNet，不加入 UAS4、DGRM_A4 或 DGRMPlus 结构改动",
+      "训练时从条件输入通过 SceneDepthEstimatorADMM 估计伪深度图",
+      "diffusion loss 使用按像素归一化的噪声预测损失，便于和正则项保持相近量级",
+      "从 noise_pred 反推 x0_pred，并在 [0,1] 空间计算 DepthGuidedAdaptiveRegularizer",
+      "总损失为 diffusion_loss + lambda_reg * depth_adaptive_reg_loss",
+      "日志记录 l_pix、l_depth_reg、l_total、l_adaptive_tv、l_edge_align 和 lambda_depth_reg"
+    ],
+    "相关文件": "[model/depth_estimator_admm.py][model/depth_guided_adaptive_regularization.py][model/ddpm_modules/diffusionV8.py][model/networksV8.py][model/modelV8.py][config/config8.yaml][train8.py][run_train8.sh]"
   }
 }
 ```
