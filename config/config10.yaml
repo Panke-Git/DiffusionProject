@@ -1,4 +1,4 @@
-name: "V7_UAS4_ADMM_DGRMPlus"
+name: "V10_Baseline_ADMM_DLDG"
 gpu_ids: [0]
 
 path:
@@ -14,7 +14,7 @@ datasets:
         name: "LSUI"
         dataroot: "/public/home/hnust15874739861/pro/publicdata/LSUI19/Train"
         resolution: 256
-        batch_size: 32
+        batch_size: 16
         num_workers: 6
         use_shuffle: true
         data_len: -1
@@ -38,22 +38,20 @@ model:
         ratio: 1
         cond_in_dim: 3
         image_size: 256
-    dgrm_plus:
+    admm_depth:
+        alpha: 0.15
+        gamma: 2.0
+        mu: 0.5
+        sigma: 0.05
+        max_iter: 20
+        eps_stop: 0.0001
+        mip_kernel: 15
+    depth_luminance_gate:
         enabled: true
-        apply_mode: "stage_last"
-        apply_resolutions: [16，32]
-        hidden_channels:
-        alpha_init: 0.01
-        use_detail_residual: true
-        use_edge_guard: true
-        edge_strength: 1.0
-        modulation_scale: 0.5
-    depth_regularization:
-        lambda_reg: 0.05
-        lambda_tv: 1.0
-        lambda_edge: 0.3
-        depth_gain: 1.5
-        edge_tau: 0.15
+        hidden_channels: 32
+        alpha_init: 0.05
+        input_range: "-1_1"
+        output_range: "-1_1"
     diffusion:
         image_size: 256
         channels: 3

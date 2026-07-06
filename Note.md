@@ -51,6 +51,19 @@
       "日志记录 l_pix、l_depth_reg、l_total、l_adaptive_tv、l_edge_align 和 lambda_depth_reg"
     ],
     "相关文件": "[model/depth_estimator_admm.py][model/depth_guided_adaptive_regularization.py][model/ddpm_modules/diffusionV8.py][model/networksV8.py][model/modelV8.py][config/config8.yaml][train8.py][run_train8.sh]"
+  },
+  "V10": {
+    "name": "V10_Baseline_ADMM_DLDG",
+    "note": "基于 Baseline，加入 DepthGuidedLuminanceGate 深度引导亮度门控",
+    "主要内容": [
+      "保留原始 Baseline UNet 结构，不改 decoder/encoder 主干",
+      "沿用 SceneDepthEstimatorADMM 从条件输入估计伪深度图，供 DLDG 使用",
+      "DLDG 在 Lab 空间只调制预测 x0 的 L 通道，保留主分支输出的 a/b 色度",
+      "训练时先由 Baseline 噪声预测反推出 x0_pred，再经过 DLDG 得到 x0_gated，并换算为等效噪声计算 diffusion loss",
+      "采样时每一步反向扩散都在 posterior 前对 x_recon 施加 DLDG",
+      "由于数据集输入/GT 使用 [-1,1]，DLDG 默认配置 input_range/output_range 均为 -1_1"
+    ],
+    "相关文件": "[model/depth_guided_luminance_gate.py][model/ddpm_modules/diffusionV10.py][model/networksV10.py][model/modelV10.py][config/config10.yaml][train10.py][run_train10.sh]"
   }
 }
 ```

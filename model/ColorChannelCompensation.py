@@ -29,6 +29,6 @@ def three_c(img_rgb):
     ch3_gauss = cv2.GaussianBlur(ch3, (0, 0), 100)
     img_lab[:, :, 2] = np.subtract(ch3, np.multiply(gray_gauss, ch3_gauss))
 
-    new = lab2rgb(img_lab)
+    new = lab2rgb(img_lab).astype(np.float32)
 
     return new
