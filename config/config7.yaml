@@ -7,7 +7,8 @@ path:
     results: "results"
     checkpoint: "checkpoint"
     best: "best"
-    resume_state: #experiments/UIEB_230803_200446/checkpoint/I860000_E607 #
+    resume_state: "/public/home/hnust15874739861/pro/DiffusionProject/experiments/V7_UAS4_ADMM_DGRMPlus_260703_152848/checkpoint/I160000_E1323"
+    #experiments/UIEB_230803_200446/checkpoint/I860000_E607 #
 
 datasets:
     train:
@@ -41,7 +42,7 @@ model:
     dgrm_plus:
         enabled: true
         apply_mode: "stage_last"
-        apply_resolutions: [16，32]
+        apply_resolutions: [16, 32]
         hidden_channels:
         alpha_init: 0.01
         use_detail_residual: true

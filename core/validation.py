@@ -1,4 +1,6 @@
+import ast
 import copy
+import json
 import logging
 import os
 import random
@@ -75,13 +77,49 @@ class FixedSeed:
 
 
 class ValidationScheduler:
-    def __init__(self, opt, n_iter):
+    def __init__(self, opt, n_iter, start_step=0, validation_history=None):
         self.opt = opt
         self.n_iter = int(n_iter)
         self.done = {
             'medium': set(),
             'full': set(),
         }
+        self.final_done = False
+        self._mark_done_by_step(start_step)
+        self._mark_done_by_history(validation_history or [])
+
+    def _ratio_threshold(self, ratio):
+        return max(1, int(round(self.n_iter * float(ratio))))
+
+    def _mark_done_by_step(self, current_step):
+        current_step = int(current_step or 0)
+        for mode in self.done:
+            cfg = _mode_opt(self.opt, mode)
+            if not _enabled(cfg, default=False):
+                continue
+            for ratio in _get(cfg, 'progress_ratios', []):
+                ratio = float(ratio)
+                if current_step >= self._ratio_threshold(ratio):
+                    self.done[mode].add(ratio)
+
+    def _mark_done_by_history(self, validation_history):
+        for info in validation_history:
+            if not isinstance(info, dict):
+                continue
+            tag = str(info.get('tag', ''))
+            try:
+                step = int(info.get('iter', -1))
+            except (TypeError, ValueError):
+                continue
+
+            if tag in self.done:
+                cfg = _mode_opt(self.opt, tag)
+                for ratio in _get(cfg, 'progress_ratios', []):
+                    ratio = float(ratio)
+                    if step >= self._ratio_threshold(ratio):
+                        self.done[tag].add(ratio)
+            elif tag == 'final' and step >= self.n_iter:
+                self.final_done = True
 
     def _due_by_ratios(self, mode, current_step):
         cfg = _mode_opt(self.opt, mode)
@@ -117,7 +155,7 @@ class ValidationScheduler:
 
     def final_job(self):
         cfg = _mode_opt(self.opt, 'final')
-        if _enabled(cfg, default=True):
+        if _enabled(cfg, default=True) and not self.final_done:
             return {'tag': 'final', 'cfg': cfg, 'ratio': 1.0}
         return None
 
@@ -252,6 +290,146 @@ def should_track_best(opt, tag):
 def should_save_checkpoint(opt, tag):
     checkpoint_modes = _get(_validation_opt(opt), 'checkpoint_modes', ['full', 'final'])
     return tag in checkpoint_modes
+
+
+def default_best_records():
+    return {
+        'loss': {'value': float('inf'), 'epoch': -1, 'iter': -1},
+        'psnr': {'value': float('-inf'), 'epoch': -1, 'iter': -1},
+        'ssim': {'value': float('-inf'), 'epoch': -1, 'iter': -1},
+    }
+
+
+def load_validation_history(log_path):
+    history = []
+    if not log_path or not os.path.exists(log_path):
+        return history
+
+    with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+        for line in f:
+            start = line.find('{')
+            end = line.rfind('}')
+            if start < 0 or end < start:
+                continue
+            try:
+                info = ast.literal_eval(line[start:end + 1])
+            except (SyntaxError, ValueError):
+                continue
+            if isinstance(info, dict) and 'tag' in info and 'iter' in info:
+                history.append(info)
+    return history
+
+
+def _load_json(path):
+    if not path or not os.path.exists(path):
+        return None
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _dump_json(path, obj):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+
+
+def _safe_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value, default=-1):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _record_from_metric_info(metric, info):
+    if not isinstance(info, dict):
+        return None
+    value_key = 'val_loss' if metric == 'loss' else metric
+    value = _safe_float(info.get(value_key))
+    if value is None:
+        return None
+    record = {
+        'value': value,
+        'epoch': _safe_int(info.get('epoch')),
+        'iter': _safe_int(info.get('iter')),
+    }
+    if info.get('tag') is not None:
+        record['tag'] = info.get('tag')
+    return record
+
+
+def _coerce_best_records(raw_records):
+    best_records = default_best_records()
+    if not isinstance(raw_records, dict):
+        return best_records
+
+    for metric in best_records:
+        record = raw_records.get(metric)
+        if not isinstance(record, dict):
+            continue
+        value = _safe_float(record.get('value'))
+        if value is None:
+            continue
+        best_records[metric] = {
+            'value': value,
+            'epoch': _safe_int(record.get('epoch')),
+            'iter': _safe_int(record.get('iter')),
+        }
+        if record.get('tag') is not None:
+            best_records[metric]['tag'] = record.get('tag')
+    return best_records
+
+
+def _update_best_records_from_info(opt, best_records, info):
+    if not isinstance(info, dict) or not should_track_best(opt, info.get('tag')):
+        return best_records
+
+    loss_record = _record_from_metric_info('loss', info)
+    if loss_record and loss_record['value'] < best_records['loss']['value']:
+        best_records['loss'] = loss_record
+
+    psnr_record = _record_from_metric_info('psnr', info)
+    if psnr_record and psnr_record['value'] > best_records['psnr']['value']:
+        best_records['psnr'] = psnr_record
+
+    ssim_record = _record_from_metric_info('ssim', info)
+    if ssim_record and ssim_record['value'] > best_records['ssim']['value']:
+        best_records['ssim'] = ssim_record
+
+    return best_records
+
+
+def load_best_records(opt, best_dir, validation_history=None):
+    best_records_path = os.path.join(best_dir, 'best_records.json')
+    best_records = _coerce_best_records(_load_json(best_records_path))
+
+    summary = _load_json(os.path.join(best_dir, 'best_summary.json')) or {}
+    for metric in best_records:
+        info = summary.get('best_{}'.format(metric))
+        if info is None:
+            info = _load_json(os.path.join(best_dir, 'best_{}_metrics.json'.format(metric)))
+        record = _record_from_metric_info(metric, info)
+        if record is None:
+            continue
+        if metric == 'loss' and record['value'] < best_records[metric]['value']:
+            best_records[metric] = record
+        elif metric in ('psnr', 'ssim') and record['value'] > best_records[metric]['value']:
+            best_records[metric] = record
+
+    for info in validation_history or []:
+        best_records = _update_best_records_from_info(opt, best_records, info)
+
+    return best_records
+
+
+def save_best_records(best_dir, best_records):
+    _dump_json(os.path.join(best_dir, 'best_records.json'), best_records)
 
 
 def update_best_records(diffusion, best_records, info, save_best_metrics):

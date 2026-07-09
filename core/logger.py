@@ -18,6 +18,25 @@ def get_timestamp():
     return datetime.now().strftime('%y%m%d_%H%M%S')
 
 
+def _strip_checkpoint_suffix(resume_state):
+    for suffix in ('_gen.pth', '_opt.pth'):
+        if resume_state.endswith(suffix):
+            return resume_state[:-len(suffix)]
+    return resume_state
+
+
+def _experiments_root_from_resume(resume_state):
+    if not resume_state:
+        return None
+
+    resume_prefix = _strip_checkpoint_suffix(resume_state)
+    state_dir = osp.dirname(resume_prefix)
+    state_group = osp.basename(state_dir)
+    if state_group in ('checkpoint', 'best'):
+        return osp.dirname(state_dir)
+    return None
+
+
 def parse(args):
     phase = args.phase
     opt_path = args.config
@@ -31,8 +50,11 @@ def parse(args):
     # set log directory
     if args.debug:
         opt['name'] = 'debug_{}'.format(opt['name'])
-    experiments_root = os.path.join(
-        'experiments', '{}_{}'.format(opt['name'], get_timestamp()))
+    resume_state = opt['path'].get('resume_state')
+    experiments_root = _experiments_root_from_resume(resume_state)
+    if experiments_root is None:
+        experiments_root = os.path.join(
+            'experiments', '{}_{}'.format(opt['name'], get_timestamp()))
     opt['path']['experiments_root'] = experiments_root
     for key, path in opt['path'].items():
         if 'resume' not in key and 'experiments' not in key:
@@ -118,13 +140,13 @@ def dict2str(opt, indent_l=1):
     return msg
 
 
-def setup_logger(logger_name, root, phase, level=logging.INFO, screen=False):
+def setup_logger(logger_name, root, phase, level=logging.INFO, screen=False, mode='a'):
     '''set up logger'''
     l = logging.getLogger(logger_name)
     formatter = logging.Formatter(
         '%(asctime)s.%(msecs)03d - %(levelname)s: %(message)s', datefmt='%y-%m-%d %H:%M:%S')
     log_file = os.path.join(root, '{}.log'.format(phase))
-    fh = logging.FileHandler(log_file, mode='w')
+    fh = logging.FileHandler(log_file, mode=mode)
     fh.setFormatter(formatter)
     l.setLevel(level)
     l.addHandler(fh)

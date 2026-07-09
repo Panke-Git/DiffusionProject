@@ -5,7 +5,16 @@ import argparse
 import logging
 import core.logger as Logger
 import core.metrics as Metrics
-from core.validation import ValidationScheduler, run_validation, should_track_best, should_save_checkpoint, update_best_records
+from core.validation import (
+    ValidationScheduler,
+    load_best_records,
+    load_validation_history,
+    run_validation,
+    save_best_records,
+    should_save_checkpoint,
+    should_track_best,
+    update_best_records,
+)
 from core.wandb_logger import WandbLogger
 from tensorboardX import SummaryWriter
 import json
@@ -127,16 +136,18 @@ if __name__ == "__main__":
             _dump_json(summary_path, summary)
 
 
-        # Track best values + where they happen
-        best_records = {
-            'loss': {'value': float('inf'), 'epoch': -1, 'iter': -1},
-            'psnr': {'value': float('-inf'), 'epoch': -1, 'iter': -1},
-            'ssim': {'value': float('-inf'), 'epoch': -1, 'iter': -1},
-        }
+        val_log_path = os.path.join(opt['path']['log'], 'val.log')
+        validation_history = load_validation_history(val_log_path)
+        best_records = load_best_records(opt, best_dir, validation_history)
+        save_best_records(best_dir, best_records)
+        logger.info('Loaded %d previous validation records from %s.', len(validation_history), val_log_path)
+        logger.info('Resume best records: %s', best_records)
+
         # Track train loss between validations (so we can store train_loss with each best)
         train_loss_sum = 0.0
         train_loss_count = 0
-        validation_scheduler = ValidationScheduler(opt, n_iter)
+        validation_scheduler = ValidationScheduler(
+            opt, n_iter, start_step=current_step, validation_history=validation_history)
 
         os.makedirs(opt['path'].get('best', os.path.join(opt['path']['experiments_root'], 'best')), exist_ok=True)
         while current_step < n_iter:
@@ -184,6 +195,7 @@ if __name__ == "__main__":
                         info['train_loss'] = avg_train_loss
                         if should_track_best(opt, job['tag']):
                             best_records = update_best_records(diffusion, best_records, info, save_best_metrics)
+                            save_best_records(best_dir, best_records)
                         if should_save_checkpoint(opt, job['tag']):
                             logger.info('Saving checkpoint after %s validation.', job['tag'])
                             diffusion.save_network(current_epoch, current_step)
@@ -218,6 +230,7 @@ if __name__ == "__main__":
             info['train_loss'] = None
             if should_track_best(opt, final_job['tag']):
                 best_records = update_best_records(diffusion, best_records, info, save_best_metrics)
+                save_best_records(best_dir, best_records)
             if should_save_checkpoint(opt, final_job['tag']):
                 logger.info('Saving checkpoint after %s validation.', final_job['tag'])
                 diffusion.save_network(current_epoch, current_step)
@@ -228,7 +241,7 @@ if __name__ == "__main__":
             best_records['psnr']['value'], best_records['psnr']['epoch'], best_records['psnr']['iter']))
         logger.info('Best ssim: {:.4f} @ epoch {} iter {}'.format(
             best_records['ssim']['value'],best_records['ssim']['epoch'], best_records['ssim']['iter'] ))
-        _dump_json(os.path.join(best_dir, 'best_records.json'), best_records)
+        save_best_records(best_dir, best_records)
         # save model
         logger.info('End of training.')
     else:
