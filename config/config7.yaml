@@ -7,7 +7,7 @@ path:
     results: "results"
     checkpoint: "checkpoint"
     best: "best"
-    resume_state: "/public/home/hnust15874739861/pro/DiffusionProject/experiments/V7_UAS4_ADMM_DGRMPlus_260703_152848/checkpoint/I160000_E1323"
+    resume_state: "/public/home/hnust15874739861/pro/DiffusionProject/experiments/V7_UAS4_ADMM_DGRMPlus_260708_133700/checkpoint/I200000_E1653"
     #experiments/UIEB_230803_200446/checkpoint/I860000_E607 #
 
 datasets:
