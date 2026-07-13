@@ -48,15 +48,17 @@ class DDPM(BaseModel):
     def optimize_parameters(self):
         """优化参数"""
         self.optG.zero_grad()
-        l_pix = self.netG(self.data)
-        # need to average in multi-gpu
-        b, c, h, w = self.data['target'].shape
-        l_pix = l_pix.sum()/int(b*c*h*w)
-        l_pix.backward()
+        l_total = self.netG(self.data)
+        l_total.backward()
         self.optG.step()
 
-        # set log
-        self.log_dict['l_pix'] = l_pix.item()
+        self.log_dict['l_total_norm'] = l_total.item()
+
+        # diffusionV4 记录了已归一化的扩散损失及深度正则子项。
+        netG_core = self.netG.module if isinstance(self.netG, nn.DataParallel) else self.netG
+        if hasattr(netG_core, 'latest_reg_info'):
+            for key, value in netG_core.latest_reg_info.items():
+                self.log_dict[key] = value
 
     def test(self, continous=False):
         self.netG.eval()
@@ -183,4 +185,3 @@ class DDPM(BaseModel):
         torch.save(opt_state, opt_path)
 
         logger.info('Saved best({}) model in [{:s}] ...'.format(tag, gen_path))
-

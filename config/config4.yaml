@@ -1,0 +1,114 @@
+name: "UNet_ADMM_V4"
+gpu_ids: [0]
+
+path:
+    log: "logs"
+    tb_logger: "tb_logger"
+    results: "results"
+    checkpoint: "checkpoint"
+    best: "best"
+    resume_state: # experiments/.../checkpoint/I10000_E1
+
+datasets:
+    train:
+        name: "LSUI"
+        dataroot: "/public/home/hnust15874739861/pro/publicdata/LSUI19/Train"
+        resolution: 256
+        batch_size: 32
+        num_workers: 6
+        use_shuffle: true
+        data_len: -1
+    val:
+        name: "LSUI"
+        dataroot: "/public/home/hnust15874739861/pro/publicdata/LSUI19/Val"
+        resolution: 256
+        use_shuffle: true
+        data_len: -1
+
+model:
+    unet:
+        in_channel: 6
+        out_channel: 3
+        inner_channel: 64
+        norm_groups: 16
+        channel_multiplier: [1, 2, 4, 8, 16]
+        attn_res: []
+        res_blocks: 1
+        dropout: 0
+        channels: 1024
+        ratio: 1
+        cond_in_dim: 3
+        image_size: 256
+    diffusion:
+        image_size: 256
+        channels: 3
+        conditional: true
+    beta_schedule:
+        train:
+            schedule: linear
+            n_timestep: 2000
+            linear_start: 0.000001
+            linear_end: 0.01
+        val:
+            schedule: linear
+            n_timestep: 2000
+            linear_start: 0.000001
+            linear_end: 0.01
+
+diffusion:
+    image_size: 256
+    channels: 3
+    conditional: true
+
+train:
+    n_iter: 200000
+    val_freq: 1000
+    save_checkpoint_freq: 10000
+    print_freq: 100
+    optimizer:
+        type: "adam"
+        lr: 0.000005
+    ema_scheduler:
+        step_start_ema: 5000
+        update_ema_every: 1
+        ema_decay: 0.9999
+
+validation:
+    seed: 42
+    report_metrics: ["psnr", "ssim", "uiqm", "uciqe"]
+    track_best_modes: ["full", "final"]
+    checkpoint_modes: ["full", "final"]
+    fast:
+        enabled: true
+        freq: 1000
+        num_samples: 10
+        n_timestep: 100
+        save_images: true
+        max_save_images: 4
+        metrics: ["psnr", "ssim"]
+    medium:
+        enabled: true
+        progress_ratios: [0.25]
+        num_samples: 100
+        n_timestep: 1000
+        save_images: true
+        max_save_images: 8
+        metrics: ["psnr", "ssim"]
+    full:
+        enabled: true
+        progress_ratios: [0.5, 0.75]
+        num_samples: -1
+        n_timestep: 2000
+        save_images: true
+        max_save_images: 8
+        metrics: ["psnr", "ssim", "uiqm", "uciqe"]
+    final:
+        enabled: true
+        num_samples: -1
+        n_timestep: 2000
+        save_images: true
+        max_save_images: 16
+        metrics: ["psnr", "ssim", "uiqm", "uciqe"]
+
+wandb:
+    project: "UIE"

@@ -104,7 +104,7 @@ class SceneDepthEstimatorADMM(nn.Module):
         b_max = _max_filter2d(ib, self.mip_kernel)
         gb_max = torch.max(g_max, b_max)
 
-        d_mip = torch.abs(r_max - gb_max)
+        d_mip = r_max - gb_max
         n_hat = _minmax_norm_per_sample(d_mip + ir)
 
         # ----- ADMM -----

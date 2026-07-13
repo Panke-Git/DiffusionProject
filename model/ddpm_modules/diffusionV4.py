@@ -98,6 +98,9 @@ class GaussianDiffusion(nn.Module):
         self.denoise_fn = denoise_fn
         self.conditional = conditional
         self.loss_type = loss_type
+        # p_losses returns a per-pixel loss, so callers and validation must not
+        # divide it by the image size a second time.
+        self.loss_is_normalized = True
 
         self.lambda_reg = lambda_reg
 
@@ -296,8 +299,10 @@ class GaussianDiffusion(nn.Module):
         else:
             noise_pred = self.denoise_fn(torch.cat([cond_img, x_noisy], dim=1), t)
 
-        # 2) 原始 diffusion loss
-        diffusion_loss = self.loss_func(noise, noise_pred)
+        # 2) 将 diffusion loss 归一化到逐像素尺度，和均值尺度的正则项相加。
+        # 如果先相加再由 modelV4 统一除以像素数，正则项会被额外缩小一次。
+        diffusion_loss_sum = self.loss_func(noise, noise_pred)
+        diffusion_loss = diffusion_loss_sum / int(b * c * h * w)
 
         # 3) 从噪声预测恢复 x0_pred
         x0_pred = self.predict_start_from_noise(x_noisy, t=t, noise=noise_pred)
@@ -321,7 +326,7 @@ class GaussianDiffusion(nn.Module):
         # 7) 总损失
         total_loss = diffusion_loss + self.lambda_reg * reg_loss
 
-        # 8) 保存日志，方便 train1.py 打印
+        # 8) 保存各损失子项，供 train4.py 打印和记录
         self.latest_reg_info = {
             'l_pix': diffusion_loss.detach().item(),
             'l_depth_reg': reg_loss.detach().item(),
